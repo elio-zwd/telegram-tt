@@ -34,12 +34,15 @@ function isValidEntry(value: unknown): value is MediaViewerHistoryEntry {
 
   return typeof value.chatId === 'string'
     && value.chatId.length > 0
+    && typeof value.messageId === 'number'
     && Number.isSafeInteger(value.messageId)
-    && Number(value.messageId) > 0
+    && value.messageId > 0
+    && typeof value.mediaIndex === 'number'
     && Number.isSafeInteger(value.mediaIndex)
-    && Number(value.mediaIndex) >= 0
+    && value.mediaIndex >= 0
+    && typeof value.updatedAt === 'number'
     && Number.isFinite(value.updatedAt)
-    && Number(value.updatedAt) > 0;
+    && value.updatedAt > 0;
 }
 
 function writeHistory(
