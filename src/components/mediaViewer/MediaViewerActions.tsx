@@ -16,7 +16,9 @@ import {
 } from '../../global/helpers';
 import {
   selectActiveDownloads,
-  selectAllowedMessageActionsSlow, selectCurrentChat,
+  selectAllowedMessageActionsSlow,
+  selectChat,
+  selectCurrentChat,
   selectCurrentMessageList,
   selectIsChatProtected,
   selectIsMessageProtected,
@@ -230,7 +232,7 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
   const openDeleteModalHandler = useLastCallback(() => {
     if (item?.type === 'message' && chat) {
       openDeleteMessageModal({
-        chatId: chat?.id,
+        chatId: chat.id,
         messageIds: [item.message.id],
         isSchedule: messageListType === 'scheduled',
         onConfirm: onBeforeDelete,
@@ -406,12 +408,12 @@ export default memo(withGlobal<OwnProps>(
     const avatarOwner = item?.type === 'avatar' ? item.avatarOwner : undefined;
     const avatarPhoto = item?.type === 'avatar' && item.profilePhotos.photos[item.mediaIndex];
 
-    const chat = selectCurrentChat(global);
+    const chat = message ? selectChat(global, message.chatId) : selectCurrentChat(global);
     const currentMessageList = selectCurrentMessageList(global);
-    const { threadId } = selectCurrentMessageList(global) || {};
+    const { threadId } = currentMessageList || {};
     const isProtected = pageMedia?.isProtected || selectIsMessageProtected(global, message);
     const activeDownloads = selectActiveDownloads(global);
-    const isChatProtected = message && selectIsChatProtected(global, message?.chatId);
+    const isChatProtected = message && selectIsChatProtected(global, message.chatId);
     const { canDelete: canDeleteMessage } = (threadId
       && message && selectAllowedMessageActionsSlow(global, message, threadId)) || {};
     const isCurrentAvatar = avatarPhoto && (avatarPhoto.id === avatarOwner?.avatarPhotoId);
