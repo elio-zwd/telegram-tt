@@ -25,14 +25,23 @@ jobs:
           cache: npm
 
       - name: Extract validated feature sources
+        env:
+          SOURCE_COMMIT: 3d8486a2b3465dbfe054a25bc7887d201908d2a8
         run: |
-          git checkout 3d8486a2b3465dbfe054a25bc7887d201908d2a8 -- \
-            docs/phase-2-unviewed-media-history.md \
-            src/util/channelMediaViewHistory.ts \
-            src/components/mediaViewer/MediaViewerContinuousControls.tsx \
-            src/components/mediaViewer/MediaViewerSlides.tsx \
-            src/components/mediaViewer/MediaViewer.tsx \
-            src/components/left/settings/SettingsDataStorage.tsx
+          download_source() {
+            path="$1"
+            mkdir -p "$(dirname "$path")"
+            curl --fail --location --silent --show-error \
+              "https://raw.githubusercontent.com/elio-zwd/telegram-tt/${SOURCE_COMMIT}/${path}" \
+              --output "$path"
+          }
+
+          download_source docs/phase-2-unviewed-media-history.md
+          download_source src/util/channelMediaViewHistory.ts
+          download_source src/components/mediaViewer/MediaViewerContinuousControls.tsx
+          download_source src/components/mediaViewer/MediaViewerSlides.tsx
+          download_source src/components/mediaViewer/MediaViewer.tsx
+          download_source src/components/left/settings/SettingsDataStorage.tsx
 
           python <<'PY'
           from pathlib import Path
