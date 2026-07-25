@@ -530,6 +530,7 @@ const MediaViewer = ({
     openMediaViewer({
       origin: origin!,
       chatId: itemChatId,
+      threadId,
       messageId: itemMessageId,
       standaloneMedia: itemStandaloneMedia,
       pageMedia: itemPageMedia,

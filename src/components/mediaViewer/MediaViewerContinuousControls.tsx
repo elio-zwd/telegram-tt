@@ -1,9 +1,12 @@
-import { memo, useMemo } from '../../lib/teact/teact';
+import { memo, useMemo, useState } from '../../lib/teact/teact';
 
 import type { ContinuousMediaFilter } from '../../types';
 import type { LangFn } from '../../util/localization';
 
 import buildClassName from '../../util/buildClassName';
+import {
+  getShouldOnlyShowUnviewedMedia, setShouldOnlyShowUnviewedMedia,
+} from '../../util/channelMediaViewHistory';
 
 import useLang from '../../hooks/useLang';
 import useLastCallback from '../../hooks/useLastCallback';
@@ -54,6 +57,16 @@ const MediaViewerContinuousControls = ({
   onToggleAutoSave,
 }: OwnProps) => {
   const lang = useLang();
+  const [shouldOnlyShowUnviewed, setShouldOnlyShowUnviewed] = useState(
+    () => getShouldOnlyShowUnviewedMedia(),
+  );
+
+  const handleToggleUnviewed = useLastCallback(() => {
+    const nextValue = !shouldOnlyShowUnviewed;
+    if (setShouldOnlyShowUnviewedMedia(nextValue)) {
+      setShouldOnlyShowUnviewed(nextValue);
+    }
+  });
 
   const handleAllMediaFilter = useLastCallback(() => onFilterChange('all'));
   const handlePhotoFilter = useLastCallback(() => onFilterChange('photos'));
@@ -125,6 +138,14 @@ const MediaViewerContinuousControls = ({
             <MenuItem onClick={handlePhotoFilter}>{lang('ContinuousMediaFilterPhotos')}</MenuItem>
             <MenuItem onClick={handleVideoFilter}>{lang('ContinuousMediaFilterVideos')}</MenuItem>
           </DropdownMenu>
+          <Button
+            round
+            size="smaller"
+            color={shouldOnlyShowUnviewed ? 'primary' : 'translucent-white'}
+            iconName={shouldOnlyShowUnviewed ? 'eye' : 'eye-crossed'}
+            ariaLabel={lang('ContinuousMediaUnviewedOnly')}
+            onClick={handleToggleUnviewed}
+          />
           <Button
             round
             size="smaller"

@@ -1,10 +1,13 @@
-import { memo } from '../../../lib/teact/teact';
+import { memo, useState } from '../../../lib/teact/teact';
 import { getActions, withGlobal } from '../../../global';
 
 import type { AccountSettings, ContinuousMediaSettings } from '../../../types';
 
 import { AUTODOWNLOAD_FILESIZE_MB_LIMITS } from '../../../config';
 import { purgeClearableCache } from '../../../util/cacheApi';
+import {
+  clearAccountMediaViewHistory, getShouldOnlyShowUnviewedMedia, setShouldOnlyShowUnviewedMedia,
+} from '../../../util/channelMediaViewHistory';
 import { pick } from '../../../util/iteratees';
 
 import useHistoryBack from '../../../hooks/useHistoryBack';
@@ -37,6 +40,7 @@ type StateProps = Pick<AccountSettings, (
   'autoLoadFileMaxSizeMb'
 )> & {
   continuousMediaSettings: ContinuousMediaSettings;
+  currentUserId?: string;
 };
 
 const CONTINUOUS_MEDIA_PHOTO_DURATIONS = [2, 3, 5, 8, 10, 15, 30];
@@ -58,11 +62,15 @@ const SettingsDataStorage = ({
   canAutoLoadFileInChannels,
   autoLoadFileMaxSizeMb,
   continuousMediaSettings,
+  currentUserId,
   onReset,
 }: OwnProps & StateProps) => {
   const { setSettingOption, showNotification, updateMediaViewerContinuousSettings } = getActions();
 
   const lang = useLang();
+  const [shouldOnlyShowUnviewed, setShouldOnlyShowUnviewed] = useState(
+    () => getShouldOnlyShowUnviewedMedia(),
+  );
 
   useHistoryBack({
     isActive,
@@ -104,6 +112,20 @@ const SettingsDataStorage = ({
   const handleContinuousMediaAutoSaveSizeChange = useLastCallback((value: number) => {
     updateMediaViewerContinuousSettings({
       autoSaveMaxSizeMb: CONTINUOUS_MEDIA_AUTO_SAVE_FILESIZE_MB_LIMITS[value],
+    });
+  });
+
+  const handleOnlyShowUnviewedChange = useLastCallback((value: boolean) => {
+    if (setShouldOnlyShowUnviewedMedia(value)) {
+      setShouldOnlyShowUnviewed(value);
+    }
+  });
+
+  const handleClearMediaViewHistory = useLastCallback(() => {
+    if (!currentUserId || !clearAccountMediaViewHistory(currentUserId)) return;
+
+    showNotification({
+      message: { key: 'ContinuousMediaViewHistoryCleared' },
     });
   });
 
@@ -177,6 +199,11 @@ const SettingsDataStorage = ({
             checked={continuousMediaSettings.isDefaultEnabled}
             onCheck={(isDefaultEnabled) => updateMediaViewerContinuousSettings({ isDefaultEnabled })}
           />
+          <Checkbox
+            label={lang('ContinuousMediaUnviewedOnly')}
+            checked={shouldOnlyShowUnviewed}
+            onCheck={handleOnlyShowUnviewedChange}
+          />
           <RangeSlider
             label={lang('ContinuousMediaPhotoDuration')}
             min={0}
@@ -212,6 +239,14 @@ const SettingsDataStorage = ({
               />
             </>
           )}
+          <ListItem
+            icon="delete"
+            multiline
+            onClick={handleClearMediaViewHistory}
+          >
+            <span className="title">{lang('ContinuousMediaClearViewHistory')}</span>
+            <span className="subtitle">{lang('ContinuousMediaClearViewHistoryDescription')}</span>
+          </ListItem>
         </Island>
       </>
     );
@@ -281,6 +316,7 @@ export default memo(withGlobal<OwnProps>(
         'autoLoadFileMaxSizeMb',
       ]),
       continuousMediaSettings: global.mediaViewer.continuousMedia,
+      currentUserId: global.currentUserId,
     };
   },
 )(SettingsDataStorage));
