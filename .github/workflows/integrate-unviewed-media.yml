@@ -1,5 +1,6 @@
 name: Integrate unviewed media
 
+# Temporary workflow removed after the clean feature commit is created.
 on:
   pull_request:
     branches:
