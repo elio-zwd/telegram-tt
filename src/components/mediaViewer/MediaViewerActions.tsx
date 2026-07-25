@@ -114,6 +114,7 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
     messageId: item.message.id,
     mediaIndex: item.mediaIndex,
     originalFilename: originalFileName,
+    extension: 'mimeType' in media ? media.mimeType.split('/').pop() : undefined,
   }, {
     template: loadMediaFilenameTemplate(),
   }) : originalFileName;
