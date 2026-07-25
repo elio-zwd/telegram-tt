@@ -4,6 +4,7 @@ import { AudioOrigin, MediaViewerOrigin } from '../../../types';
 
 import { getCurrentTabId } from '../../../util/establishMultitabRole';
 import { omit } from '../../../util/iteratees';
+import { saveMediaViewerResumePosition } from '../../../util/mediaViewerResume';
 import { getMessageReplyInfo } from '../../helpers/replies';
 import { addActionHandler } from '../../index';
 import { updateTabState } from '../../reducers/tabs';
@@ -43,7 +44,29 @@ addActionHandler('closeMediaViewer', (global, actions, payload): ActionReturnTyp
   const { tabId = getCurrentTabId() } = payload || {};
   const {
     volume, isMuted, playbackRate, isHidden,
+    chatId, threadId, messageId, mediaIndex,
+    isAvatarView, isSponsoredMessage, standaloneMedia, pageMedia,
   } = selectTabState(global, tabId).mediaViewer;
+
+  const canSaveResumePosition = Boolean(
+    global.currentUserId
+    && chatId
+    && messageId
+    && !isAvatarView
+    && !isSponsoredMessage
+    && !standaloneMedia
+    && !pageMedia,
+  );
+
+  if (canSaveResumePosition) {
+    saveMediaViewerResumePosition({
+      accountId: global.currentUserId!,
+      chatId: chatId!,
+      threadId,
+      messageId: messageId!,
+      mediaIndex,
+    });
+  }
 
   return updateTabState(global, {
     mediaViewer: {
