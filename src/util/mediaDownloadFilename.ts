@@ -16,7 +16,7 @@ export type MediaDownloadFilenameContext = {
   channelTitle?: string;
   messageDate: Date;
   messageId: number;
-  /** Zero-based index inside an album or paid-media collection. */
+  /** Zero-based index inside an album or paid-media collection */
   mediaIndex?: number;
   originalFilename?: string;
   extension?: string;
@@ -34,6 +34,7 @@ export type MediaFilenameTemplateValidation = {
   hasFilenameContent: boolean;
 };
 
+const MEDIA_FILENAME_TEMPLATE_STORAGE_KEY = 'tt-media-filename-template-v1';
 const TOKEN_REGEXP = /\{([a-zA-Z][a-zA-Z0-9]*)\}/g;
 const WINDOWS_RESERVED_NAME_REGEXP = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const INVALID_FILENAME_CHARACTERS_REGEXP = /[<>:"/\\|?*\u0000-\u001F]/g;
@@ -41,6 +42,27 @@ const TRAILING_DOTS_AND_SPACES_REGEXP = /[. ]+$/g;
 const REPEATED_SEPARATOR_REGEXP = /[_\s-]{2,}/g;
 const DEFAULT_MAX_FILENAME_LENGTH = 180;
 const DEFAULT_FALLBACK_BASE_NAME = 'telegram-media';
+
+export function loadMediaFilenameTemplate() {
+  try {
+    return localStorage.getItem(MEDIA_FILENAME_TEMPLATE_STORAGE_KEY)?.trim()
+      || DEFAULT_MEDIA_FILENAME_TEMPLATE;
+  } catch (err) {
+    return DEFAULT_MEDIA_FILENAME_TEMPLATE;
+  }
+}
+
+export function storeMediaFilenameTemplate(template: string) {
+  const normalizedTemplate = template.trim() || DEFAULT_MEDIA_FILENAME_TEMPLATE;
+  if (!validateMediaFilenameTemplate(normalizedTemplate).isValid) return false;
+
+  try {
+    localStorage.setItem(MEDIA_FILENAME_TEMPLATE_STORAGE_KEY, normalizedTemplate);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
 
 export function validateMediaFilenameTemplate(template: string): MediaFilenameTemplateValidation {
   const unknownTokens = Array.from(template.matchAll(TOKEN_REGEXP))
@@ -74,12 +96,12 @@ export function buildMediaDownloadFilename(
     date: formatDate(context.messageDate),
     time: formatTime(context.messageDate),
     messageId: String(context.messageId),
-    mediaIndex: String((context.mediaIndex || 0) + 1).padStart(2, '0'),
+    mediaIndex: String((context.mediaIndex ?? 0) + 1).padStart(2, '0'),
     originalName,
     ext: extension,
   };
 
-  let filename = template.replace(TOKEN_REGEXP, (placeholder, token: string) => {
+  let filename = template.replace(TOKEN_REGEXP, (_placeholder, token: string) => {
     return MEDIA_FILENAME_TEMPLATE_TOKENS.includes(token as MediaFilenameTemplateToken)
       ? replacements[token as MediaFilenameTemplateToken]
       : '';
@@ -100,7 +122,7 @@ export function buildMediaDownloadFilename(
   return truncateFilename(filename, options.maxLength || DEFAULT_MAX_FILENAME_LENGTH);
 }
 
-export function sanitizeMediaFilename(value: string) {
+function sanitizeMediaFilename(value: string) {
   let sanitized = value
     .replace(INVALID_FILENAME_CHARACTERS_REGEXP, '_')
     .replace(REPEATED_SEPARATOR_REGEXP, '_')
