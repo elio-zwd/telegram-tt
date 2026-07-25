@@ -4,10 +4,14 @@ import { AudioOrigin, MediaViewerOrigin } from '../../../types';
 
 import { getCurrentTabId } from '../../../util/establishMultitabRole';
 import { omit } from '../../../util/iteratees';
+import { saveMediaViewerResumePosition } from '../../../util/mediaViewerResume';
+import { isChatChannel } from '../../helpers';
 import { getMessageReplyInfo } from '../../helpers/replies';
 import { addActionHandler } from '../../index';
 import { updateTabState } from '../../reducers/tabs';
-import { selectChatMessage, selectReplyMessage, selectTabState } from '../../selectors';
+import {
+  selectChat, selectChatMessage, selectReplyMessage, selectTabState,
+} from '../../selectors';
 import { selectTimestampableMedia } from '../../selectors/media';
 
 addActionHandler('openMediaViewer', (global, actions, payload): ActionReturnType => {
@@ -50,7 +54,32 @@ addActionHandler('closeMediaViewer', (global, actions, payload): ActionReturnTyp
   const { tabId = getCurrentTabId() } = payload || {};
   const {
     volume, isMuted, playbackRate, isHidden,
+    chatId, threadId, messageId, mediaIndex,
+    isAvatarView, isSponsoredMessage, standaloneMedia, pageMedia,
   } = selectTabState(global, tabId).mediaViewer;
+  const chat = chatId ? selectChat(global, chatId) : undefined;
+
+  const canSaveResumePosition = Boolean(
+    global.currentUserId
+    && chatId
+    && messageId
+    && !isAvatarView
+    && !isSponsoredMessage
+    && !standaloneMedia
+    && !pageMedia
+    && chat
+    && isChatChannel(chat),
+  );
+
+  if (canSaveResumePosition) {
+    saveMediaViewerResumePosition({
+      accountId: global.currentUserId!,
+      chatId: chatId!,
+      threadId,
+      messageId: messageId!,
+      mediaIndex,
+    });
+  }
 
   return updateTabState(global, {
     mediaViewer: {

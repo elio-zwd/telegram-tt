@@ -472,6 +472,7 @@
 "ContinuousMediaAutoSaveVideos" = "Auto-save videos";
 "ContinuousMediaAutoSaveMaxSize" = "Maximum file size";
 "ContinuousMediaFinished" = "All media viewed";
+"ResumeMediaPosition" = "Continue from last media";
 "GifsTab2" = "GIFs";
 "DataAndStorageAutoplayVideos" = "Videos";
 "FirstName" = "First name (required)";

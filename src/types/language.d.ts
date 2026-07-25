@@ -408,6 +408,7 @@ export interface LangPair {
   'ContinuousMediaAutoSaveVideos': undefined;
   'ContinuousMediaAutoSaveMaxSize': undefined;
   'ContinuousMediaFinished': undefined;
+  'ResumeMediaPosition': undefined;
   'GifsTab2': undefined;
   'DataAndStorageAutoplayVideos': undefined;
   'FirstName': undefined;
