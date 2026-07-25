@@ -65,8 +65,7 @@ const SettingsDataStorage = ({
   const { setSettingOption, showNotification } = getActions();
 
   const lang = useLang();
-  const [filenameTemplate, setFilenameTemplate] = useState(loadMediaFilenameTemplate);
-  const [filenameTemplateError, setFilenameTemplateError] = useState<string | undefined>();
+  const [filenameTemplate, setFilenameTemplate] = useState(loadMediaFilenameTemplate());
 
   useHistoryBack({
     isActive,
@@ -86,7 +85,6 @@ const SettingsDataStorage = ({
 
   const handleFilenameTemplateChange = useLastCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setFilenameTemplate(e.currentTarget.value);
-    setFilenameTemplateError(undefined);
   });
 
   const handleFilenameTemplateBlur = useLastCallback(() => {
@@ -94,12 +92,11 @@ const SettingsDataStorage = ({
     const validation = validateMediaFilenameTemplate(normalizedTemplate);
 
     if (!validation.isValid || !storeMediaFilenameTemplate(normalizedTemplate)) {
-      setFilenameTemplateError(lang('MediaFilenameTemplateInvalid'));
+      setFilenameTemplate(loadMediaFilenameTemplate());
       return;
     }
 
     setFilenameTemplate(normalizedTemplate);
-    setFilenameTemplateError(undefined);
   });
 
   const handlePurge = useLastCallback(() => {
@@ -192,24 +189,21 @@ const SettingsDataStorage = ({
         canAutoLoadFileInChannels,
       )}
       <IslandTitle dir={lang.isRtl ? 'rtl' : undefined}>
-        {lang('MediaFilenameTemplateTitle')}
+        {lang('AccActionDownload')}
       </IslandTitle>
       <Island>
         <div className="settings-input">
           <InputText
             id="media-filename-template"
             value={filenameTemplate}
-            label={lang('MediaFilenameTemplateLabel')}
-            error={filenameTemplateError}
+            label={lang('Edit')}
             onChange={handleFilenameTemplateChange}
             onBlur={handleFilenameTemplateBlur}
           />
         </div>
       </Island>
       <IslandDescription dir={lang.isRtl ? 'rtl' : undefined}>
-        {lang('MediaFilenameTemplateDescription', {
-          tokens: MEDIA_FILENAME_TEMPLATE_TOKENS.map((token) => `{${token}}`).join(', '),
-        })}
+        {MEDIA_FILENAME_TEMPLATE_TOKENS.map((token) => `{${token}}`).join(', ')}
       </IslandDescription>
       <Island>
         <ListItem
