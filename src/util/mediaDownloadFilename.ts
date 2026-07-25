@@ -47,7 +47,7 @@ export function loadMediaFilenameTemplate() {
   try {
     return localStorage.getItem(MEDIA_FILENAME_TEMPLATE_STORAGE_KEY)?.trim()
       || DEFAULT_MEDIA_FILENAME_TEMPLATE;
-  } catch (err) {
+  } catch {
     return DEFAULT_MEDIA_FILENAME_TEMPLATE;
   }
 }
@@ -59,7 +59,7 @@ export function storeMediaFilenameTemplate(template: string) {
   try {
     localStorage.setItem(MEDIA_FILENAME_TEMPLATE_STORAGE_KEY, normalizedTemplate);
     return true;
-  } catch (err) {
+  } catch {
     return false;
   }
 }
