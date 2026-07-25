@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web A 媒体续播
 // @namespace    telegram-air/media-continuity
-// @version      0.2.1
+// @version      0.2.2
 // @description  为 Telegram Web A 提供频道媒体续播与自动连续播放能力
 // @match        https://web.telegram.org/a/*
 // @run-at       document-idle
@@ -19,6 +19,7 @@
   const NAVIGATION_TIMEOUT_MS = 2800;
   const INTERACTION_COOLDOWN_MS = 900;
   const DURATIONS = [2000, 3000, 5000, 8000, 10000, 15000, 30000];
+
   const DEFAULT_SETTINGS = Object.freeze({
     continuousEnabled: false,
     photoDurationMs: 5000,
@@ -85,13 +86,6 @@
       && style.opacity !== '0'
       && element.getAttribute('aria-hidden') !== 'true'
       && !element.hasAttribute('hidden');
-  }
-
-  function isClickable(element) {
-    if (!(element instanceof HTMLElement) || !isElementVisible(element)) return false;
-    if (element.matches(':disabled, [aria-disabled="true"]')) return false;
-    return element.matches('button, a[href], [role="button"], [tabindex]')
-      || typeof element.onclick === 'function';
   }
 
   function accessibleName(element) {
@@ -341,7 +335,8 @@
   function candidateButtons(root) {
     return Array.from(root.querySelectorAll('button, a[href], [role="button"], [tabindex]'))
       .filter((element) => !element.closest(`#${SCRIPT_ID}-host`))
-      .filter(isClickable);
+      .filter((element) => isElementVisible(element))
+      .filter((element) => !element.matches(':disabled, [aria-disabled="true"]'));
   }
 
   function findCloseButton(viewer) {
@@ -365,35 +360,94 @@
     return best;
   }
 
+  // Telegram Web A 的 navigation 按钮本身不携带方向回调，方向由点击横坐标决定。
+  // 因此这里只做“方向是否存在”的明确识别，禁止按位置猜测任意按钮。
   function findNavigationButton(viewer, direction) {
-    const viewerRect = viewer.getBoundingClientRect();
+    const slides = viewer.querySelector('.MediaViewerSlides') || viewer;
+    const exactSelector = direction > 0
+      ? 'button.navigation.next'
+      : 'button.navigation.prev';
+    const exact = slides.querySelector(exactSelector);
+    if (exact && isElementVisible(exact) && !exact.matches(':disabled, [aria-disabled="true"]')) {
+      return exact;
+    }
+
     const expected = direction > 0 ? LABELS.next : LABELS.previous;
-    const opposite = direction > 0 ? LABELS.previous : LABELS.next;
+    const classCue = direction > 0 ? /(^|\s)next(\s|$)/ : /(^|\s)prev(?:ious)?(\s|$)/;
     let best;
     let bestScore = -Infinity;
-    for (const button of candidateButtons(viewer)) {
+    for (const button of candidateButtons(slides)) {
       const name = accessibleName(button);
       const classText = normalizeText(`${button.className || ''} ${button.getAttribute('data-testid') || ''}`);
+      const hasExplicitCue = containsAny(name, expected) || classCue.test(classText);
+      if (!hasExplicitCue) continue;
       const rect = button.getBoundingClientRect();
       const centerX = rect.left + rect.width / 2;
-      const centerY = rect.top + rect.height / 2;
-      let score = 0;
-      if (containsAny(name, expected)) score += 100;
-      if (containsAny(name, opposite) || containsAny(name, LABELS.close)) score -= 100;
-      if (direction > 0 ? classText.includes('next') : classText.includes('prev')) score += 80;
-      if (direction > 0
-        ? centerX > viewerRect.left + viewerRect.width * 0.7
-        : centerX < viewerRect.left + viewerRect.width * 0.3) score += 12;
-      if (centerY > viewerRect.top + viewerRect.height * 0.2
-        && centerY < viewerRect.bottom - viewerRect.height * 0.2) score += 8;
-      if (rect.width <= 160 && rect.height <= 160) score += 3;
-      if (rect.top < viewerRect.top + 120) score -= 8;
+      let score = 100;
+      if (direction > 0 ? centerX > innerWidth / 2 : centerX < innerWidth / 2) score += 10;
       if (score > bestScore) {
         bestScore = score;
         best = button;
       }
     }
-    return bestScore >= 18 ? best : undefined;
+    return best;
+  }
+
+  function findSlidesRoot(viewer) {
+    return viewer.querySelector('.MediaViewerSlides') || viewer;
+  }
+
+  function findAdjacentSlide(viewer, direction) {
+    const slidesRoot = findSlidesRoot(viewer);
+    const slides = Array.from(slidesRoot.querySelectorAll(':scope > .MediaViewerSlide'));
+    if (!slides.length) return undefined;
+    const activeIndex = slides.findIndex((slide) => slide.classList.contains('MediaViewerSlide--active'));
+    if (activeIndex < 0) return undefined;
+    return slides[activeIndex + direction];
+  }
+
+  function hasAdjacentMedia(viewer, direction) {
+    if (findNavigationButton(viewer, direction)) return true;
+    const adjacent = findAdjacentSlide(viewer, direction);
+    if (!adjacent) return false;
+    return Boolean(adjacent.querySelector('img, video'));
+  }
+
+  function navigationAvailability(viewer) {
+    return {
+      previous: hasAdjacentMedia(viewer, -1),
+      next: hasAdjacentMedia(viewer, 1),
+    };
+  }
+
+  // 不使用 HTMLElement.click()：它生成的 pageX/clientX 为 0，会导致“下一项”被 Telegram 判为“上一项”。
+  function dispatchDirectionalClick(viewer, direction) {
+    if (!hasAdjacentMedia(viewer, direction)) return false;
+    const slidesRoot = findSlidesRoot(viewer);
+    const button = findNavigationButton(viewer, direction);
+    const target = button || slidesRoot;
+    const edgeInset = Math.max(12, Math.min(24, innerWidth * 0.02));
+    const clientX = direction > 0 ? innerWidth - edgeInset : edgeInset;
+    const clientY = Math.max(80, Math.min(innerHeight - 100, innerHeight * 0.5));
+    const event = new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      button: 0,
+      buttons: 0,
+      clientX,
+      clientY,
+      screenX: window.screenX + clientX,
+      screenY: window.screenY + clientY,
+    });
+    debugLog('触发方向点击', {
+      direction,
+      target: describeElement(target),
+      clientX,
+      clientY,
+    });
+    return target.dispatchEvent(event);
   }
 
   function mediaScore(media, viewerRect) {
@@ -530,42 +584,34 @@
 
   function detectMediaContext(viewer, activeMedia) {
     const ancestorMessageId = messageIdFromAncestors(activeMedia, viewer);
-    const viewerCandidates = Array.from(viewer.querySelectorAll('a[href]'))
-      .map((anchor) => ({ anchor, parsed: parseMessageTarget(anchor.href) }))
-      .filter((item) => item.parsed);
-
-    let target;
-    if (viewerCandidates.length) {
-      const exact = ancestorMessageId
-        ? viewerCandidates.find((item) => item.parsed.messageKey === ancestorMessageId)
-        : undefined;
-      target = (exact || viewerCandidates.find((item) => isElementVisible(item.anchor)) || viewerCandidates[0]).parsed;
-    } else if (ancestorMessageId) {
-      const documentCandidates = Array.from(
-        document.querySelectorAll('a[href*="t.me/"], a[href*="telegram.me/"]'),
-      ).slice(-400);
-      for (const anchor of documentCandidates) {
-        const parsed = parseMessageTarget(anchor.href);
-        if (parsed && parsed.messageKey === ancestorMessageId) {
-          target = parsed;
-          break;
-        }
-      }
+    const viewerLinks = Array.from(viewer.querySelectorAll('a[href]'));
+    const fallbackLinks = viewerLinks.length
+      ? []
+      : Array.from(document.querySelectorAll('a[href*="t.me/"], a[href*="telegram.me/"]')).slice(-300);
+    const candidates = [];
+    for (const anchor of [...viewerLinks, ...fallbackLinks]) {
+      const parsed = parseMessageTarget(anchor.href);
+      if (!parsed) continue;
+      let score = viewer.contains(anchor) ? 100 : 0;
+      if (isElementVisible(anchor)) score += 20;
+      if (ancestorMessageId && parsed.messageKey === ancestorMessageId) score += 80;
+      candidates.push({ parsed, score });
     }
-
+    candidates.sort((left, right) => right.score - left.score);
+    const target = candidates[0] && candidates[0].parsed;
     if (!target) return undefined;
     return {
       accountKey: getAccountKey(),
       channelKey: target.channelKey,
       topicKey: target.topicKey || '',
-      messageKey: target.messageKey,
+      messageKey: ancestorMessageId || target.messageKey,
       albumIndex: albumIndex(viewer, activeMedia),
       targetHref: target.targetHref,
       isConfirmedChannel: confirmedChannelContext(),
     };
   }
 
-  function mediaNodeId(media) {
+  function getMediaNodeId(media) {
     if (!mediaNodeIds.has(media)) {
       mediaNodeIds.set(media, nextMediaNodeId);
       nextMediaNodeId += 1;
@@ -578,7 +624,7 @@
     const source = media.currentSrc || media.src || '';
     return [
       media.tagName,
-      mediaNodeId(media),
+      getMediaNodeId(media),
       context ? context.messageKey : '',
       context ? context.albumIndex : '',
       source.slice(-160),
@@ -587,25 +633,26 @@
 
   function findMessageContainer(messageKey, targetHref) {
     const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(messageKey) : messageKey;
-    for (const selector of [
+    const selectors = [
       `[data-message-id="${escaped}"]`,
       `[data-mid="${escaped}"]`,
       `[data-msg-id="${escaped}"]`,
       `#message-${escaped}`,
       `#msg-${escaped}`,
-    ]) {
+    ];
+    for (const selector of selectors) {
       try {
         const element = document.querySelector(selector);
         if (element) return element;
       } catch (error) {
-        // 选择器失效时继续使用官方消息链接回退。
+        // 忽略失效选择器，继续使用消息链接回退。
       }
     }
-    const expected = parseMessageTarget(targetHref);
     for (const anchor of document.querySelectorAll('a[href]')) {
       const parsed = parseMessageTarget(anchor.href);
       if (!parsed || parsed.messageKey !== messageKey) continue;
-      if (expected && parsed.channelKey !== expected.channelKey) continue;
+      const target = targetHref && parseMessageTarget(targetHref);
+      if (target && parsed.channelKey !== target.channelKey) continue;
       return anchor.closest('[data-message-id], [data-mid], article, [class*="Message"], [class*="message"]')
         || anchor.parentElement;
     }
@@ -616,53 +663,31 @@
     if (!position || !isSafeResumeUrl(position.targetHref)) return undefined;
     const container = findMessageContainer(position.messageKey, position.targetHref);
     if (!container || !container.isConnected) return undefined;
-    const mediaItems = Array.from(container.querySelectorAll('img, video')).filter((media) => {
-      const rect = media.getBoundingClientRect();
-      return rect.width >= 40 && rect.height >= 40;
-    });
+    const mediaItems = Array.from(container.querySelectorAll('img, video'))
+      .filter((media) => {
+        const rect = media.getBoundingClientRect();
+        return rect.width >= 40 && rect.height >= 40;
+      });
     const media = mediaItems[position.albumIndex] || mediaItems[0];
     return media && (media.closest('button, a[href], [role="button"], [tabindex]') || media);
   }
 
   function isMediaScaled(media, viewer) {
     let current = media;
-    for (let depth = 0; current && current !== viewer && depth < 3; depth += 1) {
+    for (let depth = 0; current && current !== viewer && depth < 4; depth += 1) {
       const transform = getComputedStyle(current).transform;
       const match = transform && transform.match(/^matrix\(([^)]+)\)$/);
       if (match) {
         const values = match[1].split(',').map((value) => Number.parseFloat(value.trim()));
-        const scaleX = Math.hypot(values[0], values[1]);
-        const scaleY = Math.hypot(values[2], values[3]);
-        if (Math.abs(scaleX - 1) > 0.08 || Math.abs(scaleY - 1) > 0.08) return true;
+        if (values.length >= 4) {
+          const scaleX = Math.hypot(values[0], values[1]);
+          const scaleY = Math.hypot(values[2], values[3]);
+          if (Math.abs(scaleX - 1) > 0.08 || Math.abs(scaleY - 1) > 0.08) return true;
+        }
       }
       current = current.parentElement;
     }
     return false;
-  }
-
-  function dispatchViewerEdgeClick(viewer, direction) {
-    const slides = viewer.querySelector('.MediaViewerSlides') || viewer;
-    const rect = slides.getBoundingClientRect();
-    if (rect.width < 100 || rect.height < 100) return false;
-    const clientX = direction > 0 ? rect.right - Math.max(18, rect.width * 0.06) : rect.left + Math.max(18, rect.width * 0.06);
-    const clientY = rect.top + rect.height * 0.5;
-    return slides.dispatchEvent(new MouseEvent('click', {
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-      clientX,
-      clientY,
-      view: window,
-    }));
-  }
-
-  function triggerOfficialNavigation(viewer, direction) {
-    const button = findNavigationButton(viewer, direction);
-    if (button && !button.matches(':disabled, [aria-disabled="true"]')) {
-      button.click();
-      return { triggered: true, usedButton: true };
-    }
-    return { triggered: dispatchViewerEdgeClick(viewer, direction), usedButton: false };
   }
 
   class ControlPanel {
@@ -706,6 +731,7 @@
           }
           button { padding: 0 11px; cursor: pointer; }
           button:hover { background: rgba(255,255,255,.2); }
+          button:disabled { cursor: not-allowed; opacity: .42; }
           button:focus-visible, select:focus-visible { outline: 2px solid #7cc8ff; outline-offset: 2px; }
           button.primary[data-active="true"] { background: #2aabee; }
           button[hidden], .panel[hidden], .launcher[hidden] { display: none !important; }
@@ -756,17 +782,21 @@
       this.launcher = this.shadow.querySelector('#launcher');
       this.toggle = this.shadow.querySelector('#toggle');
       this.pause = this.shadow.querySelector('#pause');
+      this.previous = this.shadow.querySelector('#previous');
+      this.next = this.shadow.querySelector('#next');
       this.resume = this.shadow.querySelector('#resume');
       this.status = this.shadow.querySelector('#status');
       this.duration = this.shadow.querySelector('#duration');
 
-      const stopPropagation = (event) => event.stopPropagation();
-      this.shadow.addEventListener('pointerdown', stopPropagation);
-      this.shadow.addEventListener('click', stopPropagation);
+      // 在冒泡阶段阻止事件进入 Telegram 查看器，不能在捕获阶段阻断自身按钮处理器。
+      for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick']) {
+        this.shadow.addEventListener(type, (event) => event.stopPropagation());
+      }
+
       this.toggle.addEventListener('click', () => session.toggleContinuous());
       this.pause.addEventListener('click', () => session.togglePause());
-      this.shadow.querySelector('#previous').addEventListener('click', () => session.navigate(-1, false));
-      this.shadow.querySelector('#next').addEventListener('click', () => session.navigate(1, false));
+      this.previous.addEventListener('click', () => session.navigate(-1, false));
+      this.next.addEventListener('click', () => session.navigate(1, false));
       this.duration.addEventListener('change', () => session.setPhotoDuration(Number(this.duration.value)));
       this.resume.addEventListener('click', () => session.resumeLastPosition());
       this.shadow.querySelector('#collapse').addEventListener('click', () => session.setPanelCollapsed(true));
@@ -778,6 +808,8 @@
       this.toggle.textContent = state.active ? '连续浏览：开' : '连续浏览：关';
       this.pause.textContent = state.paused ? '继续' : '暂停';
       this.pause.disabled = !state.active;
+      this.previous.disabled = !state.canPrevious;
+      this.next.disabled = !state.canNext;
       this.duration.value = String(state.photoDurationMs);
       this.panel.hidden = state.collapsed;
       this.launcher.hidden = !state.collapsed;
@@ -808,45 +840,55 @@
       this.isNavigating = false;
       this.destroyed = false;
       this.lastMediaInteractionAt = 0;
+      this.currentMedia = undefined;
+      this.currentContext = undefined;
+      this.currentFingerprint = 'none';
+      this.resumePosition = undefined;
+      this.resumeTarget = undefined;
       this.mediaCleanup = [];
       this.timerId = 0;
       this.countdownId = 0;
       this.refreshTimer = 0;
       this.interactionTimer = 0;
-      this.currentMedia = undefined;
-      this.currentContext = undefined;
-      this.currentFingerprint = 'none';
-      this.panel = new ControlPanel(this);
-      this.panel.render(this.viewState());
-      this.panel.setStatus('正在识别媒体');
 
+      this.panel = new ControlPanel(this);
       this.observer = new MutationObserver(() => this.requestRefresh());
       this.observer.observe(viewer, {
         childList: true,
         subtree: true,
         attributes: true,
-        attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'disabled', 'src'],
+        attributeFilter: ['class', 'style', 'src', 'aria-hidden', 'aria-disabled'],
       });
-      this.handleVisibility = () => this.onAmbientStateChanged();
+
+      this.handleVisibilityChange = () => this.onAmbientStateChanged();
+      this.handleFocusChange = () => this.onAmbientStateChanged();
       this.handlePointerUp = () => {
-        this.interacting = false;
-        this.requestRefresh();
+        if (!this.interacting) return;
+        window.clearTimeout(this.interactionTimer);
+        this.interactionTimer = window.setTimeout(() => {
+          this.interacting = false;
+          this.scheduleForCurrentMedia(true);
+        }, INTERACTION_COOLDOWN_MS);
       };
-      document.addEventListener('visibilitychange', this.handleVisibility);
-      window.addEventListener('focus', this.handleVisibility);
-      window.addEventListener('blur', this.handleVisibility);
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
+      window.addEventListener('focus', this.handleFocusChange);
+      window.addEventListener('blur', this.handleFocusChange);
       window.addEventListener('pointerup', this.handlePointerUp, true);
       window.addEventListener('pointercancel', this.handlePointerUp, true);
+
       this.refresh();
-      debugLog('建立媒体查看器会话', describeElement(viewer));
+      debugLog('媒体查看器会话开始', describeElement(viewer));
     }
 
     viewState() {
+      const availability = navigationAvailability(this.viewer);
       return {
         active: this.active,
         paused: this.paused,
-        photoDurationMs: this.settings.photoDurationMs,
         collapsed: this.settings.panelCollapsed,
+        photoDurationMs: this.settings.photoDurationMs,
+        canPrevious: availability.previous,
+        canNext: availability.next,
       };
     }
 
@@ -859,15 +901,11 @@
     }
 
     refresh() {
-      if (this.destroyed) return;
-      if (!this.viewer.isConnected || !isElementVisible(this.viewer)) {
-        scheduleScan();
-        return;
-      }
+      if (this.destroyed || !this.viewer.isConnected) return;
       const media = findActiveMedia(this.viewer);
+      this.panel.render(this.viewState());
       if (!media) {
-        this.clearTimer();
-        this.panel.setStatus('未找到活动媒体');
+        this.panel.setStatus('等待媒体查看器就绪');
         return;
       }
       const context = detectMediaContext(this.viewer, media);
@@ -877,11 +915,11 @@
       } else {
         this.currentContext = context || this.currentContext;
         this.updateResumeButton();
-        this.scheduleForCurrentMedia();
       }
     }
 
     bindMedia(media, context, nextFingerprint) {
+      this.saveCurrentPosition();
       this.clearTimer();
       this.releaseMediaListeners();
       this.currentMedia = media;
@@ -893,6 +931,7 @@
         target.addEventListener(type, listener, options);
         this.mediaCleanup.push(() => target.removeEventListener(type, listener, options));
       };
+
       add(media, 'pointerenter', () => {
         this.hovered = true;
         this.clearTimer();
@@ -1059,21 +1098,28 @@
     navigate(direction, automatic) {
       if (this.destroyed || this.isNavigating) return;
       if (automatic && (!this.active || this.paused)) return;
+      if (!hasAdjacentMedia(this.viewer, direction)) {
+        if (automatic) this.finish('已到当前媒体末尾');
+        else this.panel.setStatus(direction > 0 ? '没有可用的下一项' : '没有可用的上一项');
+        this.panel.render(this.viewState());
+        return;
+      }
+
       this.clearTimer();
       const before = this.currentFingerprint;
       this.isNavigating = true;
       this.panel.setStatus(direction > 0 ? '正在切换下一项' : '正在切换上一项');
 
-      let result;
+      let triggered = false;
       try {
-        result = triggerOfficialNavigation(this.viewer, direction);
+        triggered = dispatchDirectionalClick(this.viewer, direction);
       } catch (error) {
-        result = { triggered: false, usedButton: false };
+        debugLog('方向点击失败', error);
       }
-      if (!result.triggered) {
+      if (!triggered) {
         this.isNavigating = false;
-        if (automatic) this.finish('已到当前媒体末尾');
-        else this.panel.setStatus(direction > 0 ? '没有可用的下一项' : '没有可用的上一项');
+        this.panel.setStatus('官方切换操作未触发');
+        this.panel.render(this.viewState());
         return;
       }
 
@@ -1090,8 +1136,8 @@
         }
         if (Date.now() - startedAt >= NAVIGATION_TIMEOUT_MS) {
           this.isNavigating = false;
-          if (automatic) this.finish('已到当前媒体末尾');
-          else this.panel.setStatus('媒体未变化，可能已到末尾或页面结构已变化');
+          this.panel.setStatus('媒体未变化，请打开调试模式检查方向控件');
+          this.panel.render(this.viewState());
           return;
         }
         window.setTimeout(poll, 100);
@@ -1152,9 +1198,9 @@
       window.clearTimeout(this.interactionTimer);
       this.releaseMediaListeners();
       this.observer.disconnect();
-      document.removeEventListener('visibilitychange', this.handleVisibility);
-      window.removeEventListener('focus', this.handleVisibility);
-      window.removeEventListener('blur', this.handleVisibility);
+      document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+      window.removeEventListener('focus', this.handleFocusChange);
+      window.removeEventListener('blur', this.handleFocusChange);
       window.removeEventListener('pointerup', this.handlePointerUp, true);
       window.removeEventListener('pointercancel', this.handlePointerUp, true);
       this.panel.destroy();
@@ -1164,10 +1210,12 @@
 
   function scanPage() {
     runtime.scanTimer = 0;
-    if (runtime.session && (!runtime.session.viewer.isConnected || !isElementVisible(runtime.session.viewer))) {
-      runtime.session.destroy();
+    const existing = runtime.session;
+    if (existing && (!existing.viewer.isConnected || !isElementVisible(existing.viewer))) {
+      existing.destroy();
       runtime.session = undefined;
     }
+
     const viewer = findMediaViewer();
     if (!viewer) return;
     if (runtime.session && runtime.session.viewer === viewer) {
@@ -1191,22 +1239,30 @@
         const result = {
           viewer: describeElement(viewer),
           activeMedia: describeElement(media),
-          nextButton: describeElement(viewer && findNavigationButton(viewer, 1)),
           previousButton: describeElement(viewer && findNavigationButton(viewer, -1)),
+          nextButton: describeElement(viewer && findNavigationButton(viewer, 1)),
+          navigation: viewer ? navigationAvailability(viewer) : { previous: false, next: false },
           closeButton: describeElement(viewer && findCloseButton(viewer)),
-          edgeClickFallbackAvailable: Boolean(viewer),
-          hasConfirmedChannelContext: Boolean(
-            viewer && media && detectMediaContext(viewer, media)?.isConfirmedChannel,
-          ),
+          hasConfirmedChannelContext: Boolean(viewer && media && detectMediaContext(viewer, media)?.isConfirmedChannel),
         };
-        console.table(result);
+        console.log('[Telegram Media Continuity] DOM 探测结果', result);
         return result;
       },
       enableDebug(enabled = true) {
         runtime.debugEnabled = Boolean(enabled);
         console.info(`[Telegram Media Continuity] DOM 探测日志已${runtime.debugEnabled ? '开启' : '关闭'}`);
       },
-      rescan: scheduleScan,
+      testPrevious() {
+        const viewer = findMediaViewer();
+        return Boolean(viewer && dispatchDirectionalClick(viewer, -1));
+      },
+      testNext() {
+        const viewer = findMediaViewer();
+        return Boolean(viewer && dispatchDirectionalClick(viewer, 1));
+      },
+      rescan() {
+        scheduleScan();
+      },
       resetStorage() {
         try {
           localStorage.removeItem(STORAGE_KEY);
@@ -1217,11 +1273,13 @@
       },
       getSummary() {
         const state = loadState();
+        const viewer = findMediaViewer();
         return {
           version: state.version,
           settings: { ...state.settings },
           positionCount: state.positions.length,
-          viewerDetected: Boolean(findMediaViewer()),
+          viewerDetected: Boolean(viewer),
+          navigation: viewer ? navigationAvailability(viewer) : { previous: false, next: false },
         };
       },
     });
@@ -1234,9 +1292,8 @@
   }
 
   function initializeScript() {
-    const attribute = `data-${SCRIPT_ID}`;
-    if (document.documentElement.hasAttribute(attribute)) return;
-    document.documentElement.setAttribute(attribute, 'ready');
+    if (document.documentElement.dataset.telegramMediaContinuity === 'ready') return;
+    document.documentElement.dataset.telegramMediaContinuity = 'ready';
     runtime.debugEnabled = /(?:[?#&])ttMediaDebug=1(?:&|$)/.test(location.href);
     installDebugApi();
 
