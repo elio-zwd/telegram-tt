@@ -157,7 +157,7 @@ export function saveMediaViewerResumePosition(
     chatId: input.chatId,
     threadId: normalizeThreadId(input.threadId),
     messageId: input.messageId,
-    mediaIndex: input.mediaIndex || 0,
+    mediaIndex: input.mediaIndex ?? 0,
     updatedAt,
   };
 
