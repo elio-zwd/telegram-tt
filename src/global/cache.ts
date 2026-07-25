@@ -406,6 +406,14 @@ function unsafeMigrateCache(cached: GlobalState, initialState: GlobalState) {
   if (cached.audioPlayer.volume === undefined) {
     cached.audioPlayer.volume = initialState.audioPlayer.volume;
   }
+
+  if (!cached.mediaViewer.continuousMedia) {
+    cached.mediaViewer.continuousMedia = initialState.mediaViewer.continuousMedia;
+  }
+
+  if (cached.cacheVersion < 4) {
+    cached.cacheVersion = 4;
+  }
 }
 
 function clearCachedDraftLocalFlags(cached: GlobalState) {

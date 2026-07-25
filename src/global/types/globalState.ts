@@ -65,6 +65,7 @@ import type {
   BotAppPermissions,
   ChatListType,
   ChatTranslatedMessages,
+  ContinuousMediaSettings,
   EmojiKeywords,
   IThemeSettings,
   ServiceNotification,
@@ -124,6 +125,7 @@ export type GlobalState = {
 
   mediaViewer: {
     lastPlaybackRate: number;
+    continuousMedia: ContinuousMediaSettings;
   };
 
   recentlyFoundChatIds?: string[];

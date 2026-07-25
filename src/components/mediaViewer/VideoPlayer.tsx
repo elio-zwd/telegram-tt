@@ -50,8 +50,12 @@ type OwnProps = {
   isClickDisabled?: boolean;
   isSponsoredMessage?: boolean;
   timestamp?: number;
+  isContinuousMediaActive?: boolean;
+  shouldPreventLoop?: boolean;
   handleSponsoredClick?: (isFromMedia?: boolean) => void;
   onClose: (e: React.MouseEvent<HTMLElement, MouseEvent>) => void;
+  onMediaReady?: NoneToVoidFunction;
+  onMediaEnded?: NoneToVoidFunction;
 };
 
 const MAX_LOOP_DURATION = 30; // Seconds
@@ -77,8 +81,12 @@ const VideoPlayer: FC<OwnProps> = ({
   isClickDisabled,
   isSponsoredMessage,
   timestamp,
+  isContinuousMediaActive,
+  shouldPreventLoop,
   handleSponsoredClick,
   onClose,
+  onMediaReady,
+  onMediaEnded,
 }) => {
   const {
     setMediaViewerVolume,
@@ -91,7 +99,7 @@ const VideoPlayer: FC<OwnProps> = ({
   const [isFullscreen, setFullscreen, exitFullscreen] = useFullscreen(videoRef, setIsPlaying);
   const { isMobile } = useAppLayout();
   const duration = videoRef.current?.duration || 0;
-  const isLooped = isGif || duration <= MAX_LOOP_DURATION;
+  const isLooped = isGif || (!shouldPreventLoop && duration <= MAX_LOOP_DURATION);
 
   const handleEnterFullscreen = useLastCallback(() => {
     // Yandex browser doesn't support PIP when video is hidden
@@ -255,6 +263,8 @@ const VideoPlayer: FC<OwnProps> = ({
     setCurrentTime(0);
     setIsPlaying(false);
     toggleControls(true, true);
+    if (isFullscreen || isInPictureInPicture) return;
+    onMediaEnded?.();
   });
 
   const handleFullscreenChange = useLastCallback(() => {
@@ -295,6 +305,7 @@ const VideoPlayer: FC<OwnProps> = ({
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isInPictureInPicture) return;
+      if (isContinuousMediaActive && e.key === ' ') return;
       switch (e.key) {
         case ' ':
         case 'Enter':
@@ -319,7 +330,7 @@ const VideoPlayer: FC<OwnProps> = ({
     return () => {
       document.removeEventListener('keydown', handleKeyDown, false);
     };
-  }, [togglePlayState, isMediaViewerOpen, isFullscreen, isInPictureInPicture]);
+  }, [togglePlayState, isContinuousMediaActive, isMediaViewerOpen, isFullscreen, isInPictureInPicture]);
 
   const wrapperStyle = posterSize && `width: ${posterSize.width}px; height: ${posterSize.height}px`;
   const videoStyle = `background-image: url(${posterData})`;
@@ -355,6 +366,7 @@ const VideoPlayer: FC<OwnProps> = ({
           onWaiting={() => setIsVideoWaiting(true)}
           onPlay={() => setIsPlaying(true)}
           onEnded={handleEnded}
+          onCanPlay={onMediaReady}
           onClick={!isMobile && !isFullscreen ? handleClick : undefined}
           onDoubleClick={!IS_TOUCH_ENV ? handleFullscreenChange : undefined}
 

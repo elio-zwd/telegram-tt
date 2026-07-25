@@ -1,7 +1,7 @@
 import { memo } from '../../../lib/teact/teact';
 import { getActions, withGlobal } from '../../../global';
 
-import type { AccountSettings } from '../../../types';
+import type { AccountSettings, ContinuousMediaSettings } from '../../../types';
 
 import { AUTODOWNLOAD_FILESIZE_MB_LIMITS } from '../../../config';
 import { purgeClearableCache } from '../../../util/cacheApi';
@@ -35,7 +35,12 @@ type StateProps = Pick<AccountSettings, (
   'canAutoLoadFileInGroups' |
   'canAutoLoadFileInChannels' |
   'autoLoadFileMaxSizeMb'
-)>;
+)> & {
+  continuousMediaSettings: ContinuousMediaSettings;
+};
+
+const CONTINUOUS_MEDIA_PHOTO_DURATIONS = [2, 3, 5, 8, 10, 15, 30];
+const CONTINUOUS_MEDIA_AUTO_SAVE_FILESIZE_MB_LIMITS = [50, 100, 200, 500];
 
 const SettingsDataStorage = ({
   isActive,
@@ -52,9 +57,10 @@ const SettingsDataStorage = ({
   canAutoLoadFileInGroups,
   canAutoLoadFileInChannels,
   autoLoadFileMaxSizeMb,
+  continuousMediaSettings,
   onReset,
 }: OwnProps & StateProps) => {
-  const { setSettingOption, showNotification } = getActions();
+  const { setSettingOption, showNotification, updateMediaViewerContinuousSettings } = getActions();
 
   const lang = useLang();
 
@@ -78,6 +84,26 @@ const SettingsDataStorage = ({
     purgeClearableCache();
     showNotification({
       message: { key: 'SettingsDataClearMediaDone' },
+    });
+  });
+
+  const renderContinuousMediaPhotoDuration = useLastCallback((value: number) => {
+    const duration = CONTINUOUS_MEDIA_PHOTO_DURATIONS[value];
+    return lang('Seconds', { count: duration }, { pluralValue: duration });
+  });
+
+  const handleContinuousMediaPhotoDurationChange = useLastCallback((value: number) => {
+    updateMediaViewerContinuousSettings({ photoDuration: CONTINUOUS_MEDIA_PHOTO_DURATIONS[value] });
+  });
+
+  const renderContinuousMediaAutoSaveSize = useLastCallback((value: number) => {
+    const size = CONTINUOUS_MEDIA_AUTO_SAVE_FILESIZE_MB_LIMITS[value];
+    return lang('MediaSizeMB', { size }, { pluralValue: size });
+  });
+
+  const handleContinuousMediaAutoSaveSizeChange = useLastCallback((value: number) => {
+    updateMediaViewerContinuousSettings({
+      autoSaveMaxSizeMb: CONTINUOUS_MEDIA_AUTO_SAVE_FILESIZE_MB_LIMITS[value],
     });
   });
 
@@ -137,6 +163,60 @@ const SettingsDataStorage = ({
     );
   }
 
+  function renderContinuousMediaBlock() {
+    const photoDurationIndex = CONTINUOUS_MEDIA_PHOTO_DURATIONS.indexOf(continuousMediaSettings.photoDuration);
+    const autoSaveSizeIndex = CONTINUOUS_MEDIA_AUTO_SAVE_FILESIZE_MB_LIMITS
+      .indexOf(continuousMediaSettings.autoSaveMaxSizeMb);
+
+    return (
+      <>
+        <IslandTitle dir={lang.isRtl ? 'rtl' : undefined}>{lang('ContinuousMediaSettings')}</IslandTitle>
+        <Island>
+          <Checkbox
+            label={lang('ContinuousMediaDefault')}
+            checked={continuousMediaSettings.isDefaultEnabled}
+            onCheck={(isDefaultEnabled) => updateMediaViewerContinuousSettings({ isDefaultEnabled })}
+          />
+          <RangeSlider
+            label={lang('ContinuousMediaPhotoDuration')}
+            min={0}
+            max={CONTINUOUS_MEDIA_PHOTO_DURATIONS.length - 1}
+            value={photoDurationIndex !== -1 ? photoDurationIndex : 2}
+            renderValue={renderContinuousMediaPhotoDuration}
+            onChange={handleContinuousMediaPhotoDurationChange}
+          />
+          <Checkbox
+            label={lang('ContinuousMediaAutoSave')}
+            checked={continuousMediaSettings.shouldAutoSave}
+            onCheck={(shouldAutoSave) => updateMediaViewerContinuousSettings({ shouldAutoSave })}
+          />
+          {continuousMediaSettings.shouldAutoSave && (
+            <>
+              <Checkbox
+                label={lang('ContinuousMediaAutoSavePhotos')}
+                checked={continuousMediaSettings.shouldAutoSavePhotos}
+                onCheck={(shouldAutoSavePhotos) => updateMediaViewerContinuousSettings({ shouldAutoSavePhotos })}
+              />
+              <Checkbox
+                label={lang('ContinuousMediaAutoSaveVideos')}
+                checked={continuousMediaSettings.shouldAutoSaveVideos}
+                onCheck={(shouldAutoSaveVideos) => updateMediaViewerContinuousSettings({ shouldAutoSaveVideos })}
+              />
+              <RangeSlider
+                label={lang('ContinuousMediaAutoSaveMaxSize')}
+                min={0}
+                max={CONTINUOUS_MEDIA_AUTO_SAVE_FILESIZE_MB_LIMITS.length - 1}
+                value={autoSaveSizeIndex !== -1 ? autoSaveSizeIndex : 2}
+                renderValue={renderContinuousMediaAutoSaveSize}
+                onChange={handleContinuousMediaAutoSaveSizeChange}
+              />
+            </>
+          )}
+        </Island>
+      </>
+    );
+  }
+
   return (
     <div className="settings-content custom-scroll">
       {renderAutoDownloadBlock(
@@ -163,6 +243,7 @@ const SettingsDataStorage = ({
         canAutoLoadFileInGroups,
         canAutoLoadFileInChannels,
       )}
+      {renderContinuousMediaBlock()}
       <Island>
         <ListItem
           onClick={handlePurge}
@@ -183,20 +264,23 @@ const SettingsDataStorage = ({
 
 export default memo(withGlobal<OwnProps>(
   (global): Complete<StateProps> => {
-    return pick(global.settings.byKey, [
-      'canAutoLoadPhotoFromContacts',
-      'canAutoLoadPhotoInPrivateChats',
-      'canAutoLoadPhotoInGroups',
-      'canAutoLoadPhotoInChannels',
-      'canAutoLoadVideoFromContacts',
-      'canAutoLoadVideoInPrivateChats',
-      'canAutoLoadVideoInGroups',
-      'canAutoLoadVideoInChannels',
-      'canAutoLoadFileFromContacts',
-      'canAutoLoadFileInPrivateChats',
-      'canAutoLoadFileInGroups',
-      'canAutoLoadFileInChannels',
-      'autoLoadFileMaxSizeMb',
-    ]);
+    return {
+      ...pick(global.settings.byKey, [
+        'canAutoLoadPhotoFromContacts',
+        'canAutoLoadPhotoInPrivateChats',
+        'canAutoLoadPhotoInGroups',
+        'canAutoLoadPhotoInChannels',
+        'canAutoLoadVideoFromContacts',
+        'canAutoLoadVideoInPrivateChats',
+        'canAutoLoadVideoInGroups',
+        'canAutoLoadVideoInChannels',
+        'canAutoLoadFileFromContacts',
+        'canAutoLoadFileInPrivateChats',
+        'canAutoLoadFileInGroups',
+        'canAutoLoadFileInChannels',
+        'autoLoadFileMaxSizeMb',
+      ]),
+      continuousMediaSettings: global.mediaViewer.continuousMedia,
+    };
   },
 )(SettingsDataStorage));

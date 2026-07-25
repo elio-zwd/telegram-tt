@@ -82,6 +82,7 @@ import type {
   CallSound,
   ChatListType,
   ConfettiParams,
+  ContinuousMediaSettings,
   ForwardTarget,
   GiftProfileFilterOptions,
   GlobalSearchContent,
@@ -1891,6 +1892,12 @@ export interface ActionPayloads {
   setMediaViewerHidden: {
     isHidden: boolean;
   } & WithTabId;
+  setMediaViewerContinuousBrowsing: {
+    isActive: boolean;
+    isPaused?: boolean;
+    direction?: -1 | 1;
+  } & WithTabId;
+  updateMediaViewerContinuousSettings: Partial<ContinuousMediaSettings>;
   openMediaFromTimestamp: {
     chatId: string;
     messageId: number;

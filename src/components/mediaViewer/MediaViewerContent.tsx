@@ -4,7 +4,7 @@ import { getActions, withGlobal } from '../../global';
 import type {
   ApiDimensions, ApiMessage, ApiPageCaption, ApiSponsoredMessage,
 } from '../../api/types';
-import type { MediaViewerOrigin, ThreadId } from '../../types';
+import type { MediaViewerMedia, MediaViewerOrigin, ThreadId } from '../../types';
 import type { MediaViewerItem, ViewableMedia } from './helpers/getViewableMedia';
 
 import { MEDIA_TIMESTAMP_SAVE_MINIMUM_DURATION } from '../../config';
@@ -42,9 +42,21 @@ type OwnProps = {
   isActive?: boolean;
   withAnimation?: boolean;
   isMoving?: boolean;
+  isContinuousMediaActive?: boolean;
   onClose: () => void;
   onFooterClick: (e: React.MouseEvent<HTMLDivElement>) => void;
   handleSponsoredClick: () => void;
+  onMediaReady?: (data: MediaViewerContentReadyData) => void;
+  onVideoEnded?: NoneToVoidFunction;
+};
+
+export type MediaViewerContentReadyData = {
+  media: MediaViewerMedia;
+  message?: ApiMessage;
+  isProtected?: boolean;
+  isPhoto: boolean;
+  isVideo: boolean;
+  isGif: boolean;
 };
 
 type StateProps = {
@@ -78,12 +90,15 @@ const MediaViewerContent = ({
   isMuted,
   isHidden,
   isMoving,
+  isContinuousMediaActive,
   threadId,
   timestamp,
   maxTimestamp,
   onClose,
   onFooterClick,
   handleSponsoredClick,
+  onMediaReady,
+  onVideoEnded,
 }: OwnProps & StateProps) => {
   const { updateLastPlaybackTimestamp } = getActions();
 
@@ -92,6 +107,7 @@ const MediaViewerContent = ({
 
   const isAvatar = item.type === 'avatar';
   const isSponsoredMessage = item.type === 'sponsoredMessage';
+  const message = item.type === 'message' ? item.message : undefined;
   const { media, caption } = viewableMedia || {};
 
   const {
@@ -118,17 +134,34 @@ const MediaViewerContent = ({
     toggleControls(true);
   });
 
+  const handleMediaReady = useLastCallback(() => {
+    if (!media || !onMediaReady) return;
+
+    onMediaReady({
+      media,
+      message,
+      isProtected,
+      isPhoto: Boolean(isPhoto),
+      isVideo: Boolean(isVideo),
+      isGif: Boolean(isGif),
+    });
+  });
+
   const updatePlaybackTimestamp = useThrottledCallback(() => {
     if (!isActive || !textMessage || media?.mediaType !== 'video') return;
     if (media.duration < MEDIA_TIMESTAMP_SAVE_MINIMUM_DURATION) return;
 
-    const message = 'id' in textMessage ? textMessage : undefined;
+    const timestampMessage = 'id' in textMessage ? textMessage : undefined;
     const currentTime = getCurrentTime();
-    if (!currentTime || !message || message.isInAlbum) return;
+    if (!currentTime || !timestampMessage || timestampMessage.isInAlbum) return;
 
     // Reset timestamp if we are close to the end of the video
     const newTimestamp = media.duration - currentTime > PLAYBACK_SAVE_INTERVAL / 1000 ? currentTime : undefined;
-    updateLastPlaybackTimestamp({ chatId: message.chatId, messageId: message.id, timestamp: newTimestamp });
+    updateLastPlaybackTimestamp({
+      chatId: timestampMessage.chatId,
+      messageId: timestampMessage.id,
+      timestamp: newTimestamp,
+    });
   }, [getCurrentTime, isActive, media, textMessage], PLAYBACK_SAVE_INTERVAL);
 
   useSignalEffect(updatePlaybackTimestamp, [getCurrentTime]);
@@ -169,6 +202,9 @@ const MediaViewerContent = ({
             playbackRate={1}
             isSponsoredMessage={isSponsoredMessage}
             handleSponsoredClick={handleSponsoredClick}
+            isContinuousMediaActive={isContinuousMediaActive}
+            onMediaReady={handleMediaReady}
+            onMediaEnded={onVideoEnded}
           />
         </div>
       );
@@ -206,6 +242,7 @@ const MediaViewerContent = ({
         posterSize,
         !isMobile && !isProtected,
         isProtected,
+        handleMediaReady,
       )}
       {isVideo && (!isActive ? renderVideoPreview(
         bestImageData,
@@ -235,6 +272,10 @@ const MediaViewerContent = ({
           isSponsoredMessage={isSponsoredMessage}
           handleSponsoredClick={handleSponsoredClick}
           timestamp={timestamp}
+          isContinuousMediaActive={isContinuousMediaActive}
+          shouldPreventLoop={isContinuousMediaActive && !isGif}
+          onMediaReady={handleMediaReady}
+          onMediaEnded={onVideoEnded}
         />
       ))}
       {(textParts || captionParts) && (
@@ -331,7 +372,13 @@ function renderPageCaption(
   );
 }
 
-function renderPhoto(blobUrl?: string, imageSize?: ApiDimensions, canDrag?: boolean, isProtected?: boolean) {
+function renderPhoto(
+  blobUrl?: string,
+  imageSize?: ApiDimensions,
+  canDrag?: boolean,
+  isProtected?: boolean,
+  onLoad?: NoneToVoidFunction,
+) {
   return blobUrl
     ? (
       <div style="position: relative;">
@@ -342,6 +389,7 @@ function renderPhoto(blobUrl?: string, imageSize?: ApiDimensions, canDrag?: bool
           className={buildClassName(isProtected && 'is-protected')}
           style={imageSize ? `width: ${imageSize.width}px` : ''}
           draggable={Boolean(canDrag)}
+          onLoad={onLoad}
         />
       </div>
     )

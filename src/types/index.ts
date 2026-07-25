@@ -331,6 +331,16 @@ export enum RightColumnContent {
 }
 
 export type MediaViewerMedia = ApiPhoto | ApiVideo | ApiDocument;
+export type ContinuousMediaFilter = 'all' | 'photos' | 'videos';
+export type ContinuousMediaSettings = {
+  isDefaultEnabled: boolean;
+  photoDuration: number;
+  filter: ContinuousMediaFilter;
+  shouldAutoSave: boolean;
+  shouldAutoSavePhotos: boolean;
+  shouldAutoSaveVideos: boolean;
+  autoSaveMaxSizeMb: number;
+};
 export type MediaViewerPageBlock = ApiPageBlockPhoto | ApiPageBlockVideo;
 export type MediaViewerPageMedia = {
   blocks: MediaViewerPageBlock[];

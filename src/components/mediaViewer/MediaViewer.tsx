@@ -13,6 +13,7 @@ import type {
   ApiSponsoredMessage,
 } from '../../api/types';
 import {
+  type ContinuousMediaFilter,
   type MediaViewerMedia,
   MediaViewerOrigin,
   type MediaViewerPageMedia,
@@ -23,17 +24,24 @@ import { ANIMATION_END_DELAY } from '../../config';
 import { requestMutation } from '../../lib/fasterdom/fasterdom';
 import {
   getMediaSearchType,
+  getMessageContent,
   getMessageContentIds,
-  getMessagePaidMedia, isChatAdmin,
+  getMessagePaidMedia,
+  isChatAdmin,
+  isChatChannel,
+  isDocumentPhoto,
+  isDocumentVideo,
 } from '../../global/helpers';
 import { hasRichText } from '../../global/helpers/richMessage';
 import {
+  selectChat,
   selectChatMessage,
   selectChatMessages,
   selectChatScheduledMessages,
   selectCurrentChatMediaSearch,
   selectCurrentSharedMediaSearch,
   selectIsChatWithSelf,
+  selectIsMessageProtected,
   selectListedIds,
   selectOutlyingListByMessageId,
   selectPeer,
@@ -71,6 +79,7 @@ import ReportAvatarModal from '../common/ReportAvatarModal';
 import Button from '../ui/Button';
 import Transition from '../ui/Transition';
 import MediaViewerActions from './MediaViewerActions';
+import MediaViewerContinuousControls from './MediaViewerContinuousControls';
 import MediaViewerSlides from './MediaViewerSlides';
 import SenderInfo from './SenderInfo';
 
@@ -101,6 +110,17 @@ type StateProps = {
   isSynced?: boolean;
   currentItem?: MediaViewerItem;
   viewableMedia?: ViewableMedia;
+  isChannel?: boolean;
+  isCurrentMediaProtected?: boolean;
+  isContinuousMediaActive?: boolean;
+  isContinuousMediaPaused?: boolean;
+  continuousMediaDirection?: -1 | 1;
+  continuousMediaPhotoDuration: number;
+  continuousMediaFilter: ContinuousMediaFilter;
+  shouldAutoSaveContinuousMedia: boolean;
+  shouldAutoSaveContinuousPhotos: boolean;
+  shouldAutoSaveContinuousVideos: boolean;
+  continuousMediaAutoSaveMaxSizeMb: number;
 };
 
 const ANIMATION_DURATION = 250;
@@ -131,6 +151,17 @@ const MediaViewer = ({
   isSynced,
   currentItem,
   viewableMedia,
+  isChannel,
+  isCurrentMediaProtected,
+  isContinuousMediaActive,
+  isContinuousMediaPaused,
+  continuousMediaDirection,
+  continuousMediaPhotoDuration,
+  continuousMediaFilter,
+  shouldAutoSaveContinuousMedia,
+  shouldAutoSaveContinuousPhotos,
+  shouldAutoSaveContinuousVideos,
+  continuousMediaAutoSaveMaxSizeMb,
 }: StateProps) => {
   const {
     openMediaViewer,
@@ -142,15 +173,22 @@ const MediaViewer = ({
     loadMoreProfilePhotos,
     clickSponsored,
     openUrl,
+    setMediaViewerContinuousBrowsing,
+    updateMediaViewerContinuousSettings,
+    showNotification,
   } = getActions();
 
   const dialogRef = useRef<HTMLDialogElement>();
+  const lastContinuousMediaDirectionRef = useRef<-1 | 1>(1);
   const isOpen = Boolean(avatarOwner || message || standaloneMedia || pageMedia || sponsoredMessage);
   const prevIsOpen = usePreviousDeprecated(isOpen);
   const prevIsHidden = usePreviousDeprecated(isHidden);
   const { isMobile } = useAppLayout();
 
   const { media, isSingle } = viewableMedia || {};
+  const isContinuousMediaAvailable = Boolean(
+    isChannel && currentItem?.type === 'message' && !isCurrentMediaProtected,
+  );
 
   /* Animation */
   const animationKeyRef = useRef<number>();
@@ -418,46 +456,36 @@ const MediaViewer = ({
     if (from.type === 'standalone') {
       const { media: fromMedia, mediaIndex: fromMediaIndex } = from;
       const nextIndex = fromMediaIndex + direction;
-      if (nextIndex >= 0 && nextIndex < fromMedia.length) {
-        return { type: 'standalone', media: fromMedia, mediaIndex: nextIndex };
-      }
-
-      return undefined;
+      if (nextIndex < 0 || nextIndex >= fromMedia.length) return undefined;
+      return getAcceptedNextItem({ type: 'standalone', media: fromMedia, mediaIndex: nextIndex }, direction);
     }
 
     if (from.type === 'avatar') {
       const { avatarOwner: fromAvatarOwner, profilePhotos: fromProfilePhotos, mediaIndex: fromMediaIndex } = from;
       const nextIndex = fromMediaIndex + direction;
-      if (nextIndex >= 0 && fromProfilePhotos && nextIndex < fromProfilePhotos.photos.length) {
-        return {
-          type: 'avatar',
-          avatarOwner: fromAvatarOwner,
-          profilePhotos: fromProfilePhotos,
-          mediaIndex: nextIndex,
-        };
-      }
-
-      return undefined;
+      if (nextIndex < 0 || !fromProfilePhotos || nextIndex >= fromProfilePhotos.photos.length) return undefined;
+      return getAcceptedNextItem({
+        type: 'avatar',
+        avatarOwner: fromAvatarOwner,
+        profilePhotos: fromProfilePhotos,
+        mediaIndex: nextIndex,
+      }, direction);
     }
 
     if (from.type === 'pageBlock') {
       const { pageMedia: fromPageMedia, mediaIndex: fromMediaIndex } = from;
       const nextIndex = fromMediaIndex + direction;
-      if (nextIndex >= 0 && nextIndex < fromPageMedia.blocks.length) {
-        return { type: 'pageBlock', pageMedia: fromPageMedia, mediaIndex: nextIndex };
-      }
-
-      return undefined;
+      if (nextIndex < 0 || nextIndex >= fromPageMedia.blocks.length) return undefined;
+      return getAcceptedNextItem({ type: 'pageBlock', pageMedia: fromPageMedia, mediaIndex: nextIndex }, direction);
     }
 
     if (from.type === 'sponsoredMessage') {
       const { message: fromSponsoredMessage, mediaIndex: fromSponsoredMessageIndex } = from;
       const nextIndex = fromSponsoredMessageIndex! + direction;
-      if (nextIndex >= 0 && fromSponsoredMessage) {
-        return { type: 'sponsoredMessage', message: fromSponsoredMessage, mediaIndex: nextIndex };
-      }
-
-      return undefined;
+      if (nextIndex < 0 || !fromSponsoredMessage) return undefined;
+      return getAcceptedNextItem({
+        type: 'sponsoredMessage', message: fromSponsoredMessage, mediaIndex: nextIndex,
+      }, direction);
     }
 
     const { message: fromMessage, mediaIndex: fromMediaIndex } = from;
@@ -467,7 +495,7 @@ const MediaViewer = ({
       const nextIndex = fromMediaIndex! + direction;
 
       if (nextIndex >= 0 && nextIndex < paidMedia.extendedMedia.length) {
-        return { type: 'message', message: fromMessage, mediaIndex: nextIndex };
+        return getAcceptedNextItem({ type: 'message', message: fromMessage, mediaIndex: nextIndex }, direction);
       }
     }
 
@@ -476,11 +504,14 @@ const MediaViewer = ({
     const nextIndex = index + direction;
     const nextMessageId = messageMediaIds![nextIndex];
     const nextMessage = chatMessages?.[nextMessageId];
-    if (nextMessage) {
-      return { type: 'message', message: nextMessage };
-    }
+    if (!nextMessage) return undefined;
+    return getAcceptedNextItem({ type: 'message', message: nextMessage }, direction);
 
-    return undefined;
+    function getAcceptedNextItem(candidate: MediaViewerItem, nextDirection: number) {
+      if (!isContinuousMediaActive || !isContinuousMediaAvailable) return candidate;
+      if (isContinuousMediaItemAllowed(candidate, continuousMediaFilter)) return candidate;
+      return getNextItem(candidate, nextDirection);
+    }
   });
 
   const openMediaViewerItem = useLastCallback((item?: MediaViewerItem) => {
@@ -510,6 +541,65 @@ const MediaViewer = ({
     });
   });
 
+  const handleContinuousMediaToggle = useLastCallback(() => {
+    setMediaViewerContinuousBrowsing({
+      isActive: !isContinuousMediaActive,
+      direction: lastContinuousMediaDirectionRef.current,
+    });
+  });
+
+  const handleContinuousMediaPauseToggle = useLastCallback(() => {
+    if (!isContinuousMediaActive) return;
+
+    setMediaViewerContinuousBrowsing({
+      isActive: true,
+      isPaused: !isContinuousMediaPaused,
+    });
+  });
+
+  const handleContinuousMediaNavigation = useLastCallback((direction: -1 | 1) => {
+    lastContinuousMediaDirectionRef.current = direction;
+    if (!isContinuousMediaActive) return;
+
+    setMediaViewerContinuousBrowsing({
+      isActive: true,
+      direction,
+    });
+  });
+
+  const handleContinuousMediaPrevious = useLastCallback(() => {
+    if (!currentItem) return;
+
+    const previousItem = getNextItem(currentItem, -1);
+    if (!previousItem) return;
+
+    handleContinuousMediaNavigation(-1);
+    openMediaViewerItem(previousItem);
+  });
+
+  const handleContinuousMediaNext = useLastCallback(() => {
+    if (!currentItem) return;
+
+    const nextItem = getNextItem(currentItem, 1);
+    if (!nextItem) return;
+
+    handleContinuousMediaNavigation(1);
+    openMediaViewerItem(nextItem);
+  });
+
+  const handleContinuousMediaFilterChange = useLastCallback((filter: ContinuousMediaFilter) => {
+    updateMediaViewerContinuousSettings({ filter });
+  });
+
+  const handleContinuousMediaAutoSaveToggle = useLastCallback(() => {
+    updateMediaViewerContinuousSettings({ shouldAutoSave: !shouldAutoSaveContinuousMedia });
+  });
+
+  const handleContinuousMediaFinished = useLastCallback(() => {
+    setMediaViewerContinuousBrowsing({ isActive: false });
+    showNotification({ message: { key: 'ContinuousMediaFinished' } });
+  });
+
   const handleBeforeDelete = useLastCallback(() => {
     const mediaCount = profilePhotos?.photos.length
       || standaloneMedia?.length || pageMedia?.blocks.length || messageMediaIds?.length || 0;
@@ -537,6 +627,24 @@ const MediaViewer = ({
   });
 
   const lang = useOldLang();
+  const continuousMediaIds = useMemo(() => {
+    if (!isContinuousMediaActive || !messageMediaIds) return messageMediaIds;
+
+    return messageMediaIds.filter((id) => {
+      const mediaMessage = chatMessages?.[id];
+      return mediaMessage && isContinuousMediaItemAllowed(
+        { type: 'message', message: mediaMessage },
+        continuousMediaFilter,
+      );
+    });
+  }, [chatMessages, continuousMediaFilter, isContinuousMediaActive, messageMediaIds]);
+  const continuousMediaIndex = currentItem?.type === 'message' && continuousMediaIds
+    ? continuousMediaIds.indexOf(currentItem.message.id) : undefined;
+  const currentMediaPosition = continuousMediaIndex !== undefined && continuousMediaIndex >= 0
+    ? continuousMediaIndex + 1 : undefined;
+  const totalMediaCount = continuousMediaIds?.length;
+  const previousMedia = currentItem && getNextItem(currentItem, -1);
+  const nextMedia = currentItem && getNextItem(currentItem, 1);
 
   const content = (
     <>
@@ -601,7 +709,39 @@ const MediaViewer = ({
         isHidden={isHidden}
         onFooterClick={handleFooterClick}
         handleSponsoredClick={handleSponsoredClick}
+        isContinuousMediaAvailable={isContinuousMediaAvailable}
+        isContinuousMediaActive={isContinuousMediaActive}
+        isContinuousMediaPaused={isContinuousMediaPaused}
+        continuousMediaDirection={continuousMediaDirection}
+        continuousMediaPhotoDuration={continuousMediaPhotoDuration}
+        shouldAutoSaveContinuousMedia={shouldAutoSaveContinuousMedia}
+        shouldAutoSaveContinuousPhotos={shouldAutoSaveContinuousPhotos}
+        shouldAutoSaveContinuousVideos={shouldAutoSaveContinuousVideos}
+        continuousMediaAutoSaveMaxSizeMb={continuousMediaAutoSaveMaxSizeMb}
+        onContinuousMediaNavigation={handleContinuousMediaNavigation}
+        onContinuousMediaFinished={handleContinuousMediaFinished}
+        onToggleContinuousMedia={handleContinuousMediaToggle}
+        onToggleContinuousMediaPause={handleContinuousMediaPauseToggle}
+        onToggleContinuousMediaAutoSave={handleContinuousMediaAutoSaveToggle}
       />
+      {isContinuousMediaAvailable && (
+        <MediaViewerContinuousControls
+          isActive={isContinuousMediaActive}
+          isPaused={isContinuousMediaPaused}
+          filter={continuousMediaFilter}
+          shouldAutoSave={shouldAutoSaveContinuousMedia}
+          position={currentMediaPosition}
+          total={totalMediaCount}
+          hasPrevious={Boolean(previousMedia)}
+          hasNext={Boolean(nextMedia)}
+          onToggle={handleContinuousMediaToggle}
+          onTogglePause={handleContinuousMediaPauseToggle}
+          onPrevious={handleContinuousMediaPrevious}
+          onNext={handleContinuousMediaNext}
+          onFilterChange={handleContinuousMediaFilterChange}
+          onToggleAutoSave={handleContinuousMediaAutoSaveToggle}
+        />
+      )}
     </>
   );
   const prevContent = usePreviousDeprecated(content);
@@ -644,6 +784,12 @@ export default memo(withGlobal(
       isSponsoredMessage,
     } = mediaViewer;
     const withAnimation = selectPerformanceSettingsValue(global, 'mediaViewerAnimations');
+    const {
+      continuousMedia: continuousMediaSettings,
+    } = global.mediaViewer;
+    const {
+      continuousMedia: continuousMediaSession,
+    } = mediaViewer;
 
     const { currentUserId, isSynced } = global;
     const isChatWithSelf = Boolean(chatId) && selectIsChatWithSelf(global, chatId);
@@ -688,6 +834,17 @@ export default memo(withGlobal(
         chatMessages: undefined,
         sponsoredMessage: undefined,
         withDynamicLoading,
+        isChannel: false,
+        isCurrentMediaProtected: false,
+        isContinuousMediaActive: false,
+        isContinuousMediaPaused: false,
+        continuousMediaDirection: undefined,
+        continuousMediaPhotoDuration: continuousMediaSettings.photoDuration,
+        continuousMediaFilter: continuousMediaSettings.filter,
+        shouldAutoSaveContinuousMedia: continuousMediaSettings.shouldAutoSave,
+        shouldAutoSaveContinuousPhotos: continuousMediaSettings.shouldAutoSavePhotos,
+        shouldAutoSaveContinuousVideos: continuousMediaSettings.shouldAutoSaveVideos,
+        continuousMediaAutoSaveMaxSizeMb: continuousMediaSettings.autoSaveMaxSizeMb,
       };
     }
 
@@ -711,6 +868,10 @@ export default memo(withGlobal(
       message, standaloneMedia, pageMedia, mediaIndex, sponsoredMessage,
     });
     const viewableMedia = selectViewableMedia(global, origin, currentItem);
+    const chat = chatId ? selectChat(global, chatId) : undefined;
+    const isChannel = Boolean(chat && isChatChannel(chat));
+    const isCurrentMediaProtected = currentItem?.type === 'message'
+      && selectIsMessageProtected(global, currentItem.message);
 
     let chatMessages: Record<number, ApiMessage> | undefined;
 
@@ -770,6 +931,33 @@ export default memo(withGlobal(
       avatar: undefined,
       avatarOwner: undefined,
       profilePhotos: undefined,
+      isChannel,
+      isCurrentMediaProtected,
+      isContinuousMediaActive: continuousMediaSession?.isActive,
+      isContinuousMediaPaused: continuousMediaSession?.isPaused,
+      continuousMediaDirection: continuousMediaSession?.direction,
+      continuousMediaPhotoDuration: continuousMediaSettings.photoDuration,
+      continuousMediaFilter: continuousMediaSettings.filter,
+      shouldAutoSaveContinuousMedia: continuousMediaSettings.shouldAutoSave,
+      shouldAutoSaveContinuousPhotos: continuousMediaSettings.shouldAutoSavePhotos,
+      shouldAutoSaveContinuousVideos: continuousMediaSettings.shouldAutoSaveVideos,
+      continuousMediaAutoSaveMaxSizeMb: continuousMediaSettings.autoSaveMaxSizeMb,
     };
   },
 )(MediaViewer));
+
+function isContinuousMediaItemAllowed(item: MediaViewerItem, filter: ContinuousMediaFilter) {
+  if (item.type !== 'message') return true;
+  if (item.message.isProtected || getMessagePaidMedia(item.message)) return false;
+
+  const mediaType = getContinuousMediaType(item.message);
+  if (!mediaType) return false;
+  return filter === 'all' || filter === `${mediaType}s`;
+}
+
+function getContinuousMediaType(message: ApiMessage): 'photo' | 'video' | undefined {
+  const { document, photo, video } = getMessageContent(message);
+  if (photo || (document && isDocumentPhoto(document))) return 'photo';
+  if (!video && !(document && isDocumentVideo(document))) return undefined;
+  return video?.isGif ? 'photo' : 'video';
+}

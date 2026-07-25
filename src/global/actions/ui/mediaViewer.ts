@@ -17,6 +17,12 @@ addActionHandler('openMediaViewer', (global, actions, payload): ActionReturnType
   } = payload;
 
   const tabState = selectTabState(global, tabId);
+  const continuousMedia = tabState.mediaViewer.continuousMedia || (
+    global.mediaViewer.continuousMedia.isDefaultEnabled ? {
+      isActive: true,
+      direction: 1,
+    } : undefined
+  );
 
   return updateTabState(global, {
     mediaViewer: {
@@ -33,6 +39,7 @@ addActionHandler('openMediaViewer', (global, actions, payload): ActionReturnType
       isHidden: false,
       withDynamicLoading,
       timestamp,
+      continuousMedia,
     },
     forwardMessages: {},
     isShareMessageModalShown: false,
@@ -217,4 +224,38 @@ addActionHandler('setMediaViewerHidden', (global, actions, payload): ActionRetur
       isHidden,
     },
   }, tabId);
+});
+
+addActionHandler('setMediaViewerContinuousBrowsing', (global, actions, payload): ActionReturnType => {
+  const {
+    isActive,
+    isPaused,
+    direction,
+    tabId = getCurrentTabId(),
+  } = payload;
+  const { mediaViewer } = selectTabState(global, tabId);
+
+  return updateTabState(global, {
+    mediaViewer: {
+      ...mediaViewer,
+      continuousMedia: isActive ? {
+        isActive: true,
+        isPaused: isPaused ? true : undefined,
+        direction: direction || mediaViewer.continuousMedia?.direction || 1,
+      } : undefined,
+    },
+  }, tabId);
+});
+
+addActionHandler('updateMediaViewerContinuousSettings', (global, actions, payload): ActionReturnType => {
+  return {
+    ...global,
+    mediaViewer: {
+      ...global.mediaViewer,
+      continuousMedia: {
+        ...global.mediaViewer.continuousMedia,
+        ...payload,
+      },
+    },
+  };
 });

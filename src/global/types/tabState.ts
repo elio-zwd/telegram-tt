@@ -424,6 +424,11 @@ export type TabState = {
     isMuted: boolean;
     isHidden?: boolean;
     timestamp?: number;
+    continuousMedia?: {
+      isActive: true;
+      isPaused?: true;
+      direction: -1 | 1;
+    };
   };
 
   audioPlayer: {

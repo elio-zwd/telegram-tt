@@ -2,11 +2,13 @@ import type { FC } from '../../lib/teact/teact';
 import {
   memo, useEffect, useLayoutEffect, useMemo, useRef, useSignal, useState,
 } from '../../lib/teact/teact';
+import { getActions } from '../../global';
 
 import type { MediaViewerOrigin, ThreadId } from '../../types';
 import type { RealTouchEvent } from '../../util/captureEvents';
 import type { MediaViewerItem } from './helpers/getViewableMedia';
 
+import { getMediaHash } from '../../global/helpers';
 import { animateNumber, timingFunctions } from '../../util/animation';
 import { IS_IOS, IS_TOUCH_ENV } from '../../util/browser/windowEnvironment';
 import buildClassName from '../../util/buildClassName';
@@ -31,7 +33,7 @@ import useWindowSize from '../../hooks/window/useWindowSize';
 import useControlsSignal from './hooks/useControlsSignal';
 import useZoomChange from './hooks/useZoomChangeSignal';
 
-import MediaViewerContent from './MediaViewerContent';
+import MediaViewerContent, { type MediaViewerContentReadyData } from './MediaViewerContent';
 
 import './MediaViewerSlides.scss';
 
@@ -58,6 +60,20 @@ type OwnProps = {
   onFooterClick: (e: React.MouseEvent<HTMLDivElement>) => void;
   handleSponsoredClick: (isFromMedia?: boolean) => void;
   onClose: () => void;
+  isContinuousMediaAvailable?: boolean;
+  isContinuousMediaActive?: boolean;
+  isContinuousMediaPaused?: boolean;
+  continuousMediaDirection?: -1 | 1;
+  continuousMediaPhotoDuration: number;
+  shouldAutoSaveContinuousMedia: boolean;
+  shouldAutoSaveContinuousPhotos: boolean;
+  shouldAutoSaveContinuousVideos: boolean;
+  continuousMediaAutoSaveMaxSizeMb: number;
+  onContinuousMediaNavigation: (direction: -1 | 1) => void;
+  onContinuousMediaFinished: NoneToVoidFunction;
+  onToggleContinuousMedia: NoneToVoidFunction;
+  onToggleContinuousMediaPause: NoneToVoidFunction;
+  onToggleContinuousMediaAutoSave: NoneToVoidFunction;
 };
 
 const SWIPE_X_THRESHOLD = 50;
@@ -72,6 +88,8 @@ const CLICK_Y_THRESHOLD = 80;
 const HEADER_HEIGHT = 60;
 const MAX_ZOOM = 4;
 const MIN_ZOOM = 1;
+const BYTES_PER_MEGABYTE = 1024 * 1024;
+const MILLISECONDS_IN_SECOND = 1000;
 let cancelAnimation: ReturnType<typeof animateNumber> | undefined;
 let cancelZoomAnimation: ReturnType<typeof animateNumber> | undefined;
 
@@ -90,6 +108,7 @@ const MediaViewerSlides: FC<OwnProps> = ({
   item,
   isVideo,
   isGif,
+  isPhoto,
   isOpen,
   withAnimation,
   isHidden,
@@ -101,7 +120,22 @@ const MediaViewerSlides: FC<OwnProps> = ({
   onClose,
   onFooterClick,
   handleSponsoredClick,
+  isContinuousMediaAvailable,
+  isContinuousMediaActive,
+  isContinuousMediaPaused,
+  continuousMediaDirection,
+  continuousMediaPhotoDuration,
+  shouldAutoSaveContinuousMedia,
+  shouldAutoSaveContinuousPhotos,
+  shouldAutoSaveContinuousVideos,
+  continuousMediaAutoSaveMaxSizeMb,
+  onContinuousMediaNavigation,
+  onContinuousMediaFinished,
+  onToggleContinuousMedia,
+  onToggleContinuousMediaPause,
+  onToggleContinuousMediaAutoSave,
 }) => {
+  const { downloadMedia } = getActions();
   const containerRef = useRef<HTMLDivElement>();
   const activeSlideRef = useRef<HTMLDivElement>();
   const leftSlideRef = useRef<HTMLDivElement>();
@@ -110,7 +144,13 @@ const MediaViewerSlides: FC<OwnProps> = ({
   const swipeDirectionRef = useRef<SwipeDirection | undefined>(undefined);
   const initialContentRectRef = useRef<DOMRect | undefined>(undefined);
   const isReleasedRef = useRef(false);
+  const changeSlideRef = useRef<(direction: -1 | 1) => boolean>();
+  const savedMediaHashesRef = useRef<Record<string, true>>({});
+  const mediaReadyDataRef = useRef<MediaViewerContentReadyData>();
   const [isActive, setIsActive] = useState(true);
+  const [isAwaitingNextMedia, setIsAwaitingNextMedia] = useState(false);
+  const [mediaReadyItem, setMediaReadyItem] = useState<MediaViewerItem>();
+  const [isDocumentVisible, setIsDocumentVisible] = useState(!document.hidden);
   const [getZoomChange] = useZoomChange();
   const prevZoomChangeRef = useRef(getZoomChange());
   const isFullscreen = useFullscreenStatus();
@@ -161,9 +201,113 @@ const MediaViewerSlides: FC<OwnProps> = ({
   }, [item, setActiveItem, transformRef]);
 
   useEffect(() => {
+    const handleVisibilityChange = () => setIsDocumentVisible(!document.hidden);
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isSynced || !activeItem || isLoadingMoreMedia) return;
     loadMoreItemsIfNeeded(activeItem);
   }, [activeItem, loadMoreItemsIfNeeded, isSynced, isLoadingMoreMedia]);
+
+  const handleAutoSaveMedia = useLastCallback((data: MediaViewerContentReadyData) => {
+    if (!isContinuousMediaActive || !shouldAutoSaveContinuousMedia || data.isProtected || !data.message) return;
+    if (data.isPhoto && !shouldAutoSaveContinuousPhotos) return;
+    if (data.isVideo && !shouldAutoSaveContinuousVideos) return;
+
+    const size = 'size' in data.media ? data.media.size : undefined;
+    const maxSize = continuousMediaAutoSaveMaxSizeMb * BYTES_PER_MEGABYTE;
+    if (size && size > maxSize) return;
+
+    const mediaHash = getMediaHash(data.media, 'download');
+    if (!mediaHash || savedMediaHashesRef.current[mediaHash]) return;
+
+    savedMediaHashesRef.current[mediaHash] = true;
+    downloadMedia({ media: data.media, originMessage: data.message });
+  });
+
+  const handleMediaReady = useLastCallback((data: MediaViewerContentReadyData) => {
+    const currentItem = activeItemRef.current;
+    if (!currentItem) return;
+
+    mediaReadyDataRef.current = data;
+    setMediaReadyItem(currentItem);
+    handleAutoSaveMedia(data);
+  });
+
+  const handleContinuousMediaAdvance = useLastCallback(() => {
+    if (!isContinuousMediaActive || isContinuousMediaPaused || !continuousMediaDirection) return;
+
+    const changeSlide = changeSlideRef.current;
+    if (!changeSlide) return;
+
+    const hasChanged = changeSlide(continuousMediaDirection);
+    if (hasChanged) {
+      setIsAwaitingNextMedia(false);
+      return;
+    }
+    if (isLoadingMoreMedia) {
+      setIsAwaitingNextMedia(true);
+      return;
+    }
+
+    onContinuousMediaFinished();
+  });
+
+  const handleVideoEnded = useLastCallback(() => {
+    handleContinuousMediaAdvance();
+  });
+
+  useEffect(() => {
+    const data = mediaReadyDataRef.current;
+    if (!data || mediaReadyItem !== activeItem) return;
+    handleAutoSaveMedia(data);
+  }, [activeItem, handleAutoSaveMedia, mediaReadyItem]);
+
+  useEffect(() => {
+    if (!isAwaitingNextMedia || isLoadingMoreMedia) return;
+
+    setIsAwaitingNextMedia(false);
+    handleContinuousMediaAdvance();
+  }, [handleContinuousMediaAdvance, isAwaitingNextMedia, isLoadingMoreMedia]);
+
+  useEffect(() => {
+    const shouldAdvancePhoto = isContinuousMediaAvailable
+      && isContinuousMediaActive
+      && !isContinuousMediaPaused
+      && (isPhoto || isGif)
+      && isActive
+      && mediaReadyItem === activeItem
+      && isDocumentVisible
+      && !isScaled
+      && !isMouseDown;
+    if (!shouldAdvancePhoto) return undefined;
+
+    const delay = continuousMediaPhotoDuration * MILLISECONDS_IN_SECOND;
+    const timeout = window.setTimeout(handleContinuousMediaAdvance, delay);
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [
+    activeItem,
+    continuousMediaPhotoDuration,
+    handleContinuousMediaAdvance,
+    isActive,
+    isContinuousMediaActive,
+    isContinuousMediaAvailable,
+    isContinuousMediaPaused,
+    isDocumentVisible,
+    isGif,
+    isLoadingMoreMedia,
+    isMouseDown,
+    isPhoto,
+    isScaled,
+    mediaReadyItem,
+  ]);
 
   useLayoutEffect(() => {
     const { x, y, scale } = getTransform();
@@ -202,11 +346,12 @@ const MediaViewerSlides: FC<OwnProps> = ({
       lastGestureTime = Date.now();
     }, 500, false, true);
 
-    const changeSlide = (direction: number) => {
+    const changeSlide = (direction: -1 | 1) => {
       const cActiveItem = activeItemRef.current;
       if (cActiveItem === undefined) return false;
       const nextItem = getNextItem(cActiveItem, direction);
       if (nextItem !== undefined) {
+        onContinuousMediaNavigation(direction);
         const offset = (windowWidth + SLIDES_GAP) * direction;
         const transform = transformRef.current;
         const x = transform.x + offset;
@@ -234,6 +379,7 @@ const MediaViewerSlides: FC<OwnProps> = ({
       }
       return false;
     };
+    changeSlideRef.current = changeSlide;
 
     const changeSlideOnClick = (e: MouseEvent): [boolean, boolean] => {
       const { scale } = transformRef.current;
@@ -241,7 +387,7 @@ const MediaViewerSlides: FC<OwnProps> = ({
       if ((e.target as HTMLElement).closest('div.VideoPlayerControls')) {
         return [false, false];
       }
-      let direction = 0;
+      let direction: -1 | 1 | undefined;
       if (windowHeight - e.pageY < CLICK_Y_THRESHOLD) {
         return [false, false];
       }
@@ -250,8 +396,8 @@ const MediaViewerSlides: FC<OwnProps> = ({
       } else if (e.pageX > windowWidth - clickXThreshold) {
         direction = 1;
       }
-      const hasNextSlide = changeSlide(direction);
-      const isInThreshold = direction !== 0;
+      const hasNextSlide = direction ? changeSlide(direction) : false;
+      const isInThreshold = direction !== undefined;
       return [isInThreshold, hasNextSlide];
     };
 
@@ -408,6 +554,7 @@ const MediaViewerSlides: FC<OwnProps> = ({
         // We shift everything by one screen width and then set new active message id
         x += offset;
         setActiveItem(nextItem);
+        onContinuousMediaNavigation(direction);
         selectItemDebounced(nextItem);
       }
       // Then we always return to the original position
@@ -646,6 +793,9 @@ const MediaViewerSlides: FC<OwnProps> = ({
     document.addEventListener('keydown', handleKeyDown, false);
     return () => {
       cleanup();
+      if (changeSlideRef.current === changeSlide) {
+        changeSlideRef.current = undefined;
+      }
       document.removeEventListener('keydown', handleKeyDown, false);
     };
   },
@@ -656,6 +806,7 @@ const MediaViewerSlides: FC<OwnProps> = ({
     getNextItem,
     isFullscreen,
     isHidden,
+    onContinuousMediaNavigation,
     onClose,
     selectItemDebounced,
     setActiveItem,
@@ -666,6 +817,41 @@ const MediaViewerSlides: FC<OwnProps> = ({
     windowHeight,
     windowWidth,
     withAnimation,
+  ]);
+
+  useEffect(() => {
+    if (!isContinuousMediaAvailable) return undefined;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isTextInputTarget(e.target)) return;
+
+      if (e.key === ' ') {
+        if (!isContinuousMediaActive) return;
+        e.preventDefault();
+        onToggleContinuousMediaPause();
+        return;
+      }
+      if (e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        onToggleContinuousMedia();
+        return;
+      }
+      if (e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        onToggleContinuousMediaAutoSave();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown, false);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, false);
+    };
+  }, [
+    isContinuousMediaActive,
+    isContinuousMediaAvailable,
+    onToggleContinuousMedia,
+    onToggleContinuousMediaAutoSave,
+    onToggleContinuousMediaPause,
   ]);
 
   useEffect(() => {
@@ -745,6 +931,9 @@ const MediaViewerSlides: FC<OwnProps> = ({
           onClose={onClose}
           onFooterClick={onFooterClick}
           handleSponsoredClick={handleSponsoredClick}
+          isContinuousMediaActive={isContinuousMediaActive}
+          onMediaReady={handleMediaReady}
+          onVideoEnded={handleVideoEnded}
         />
       </div>
       <div className="MediaViewerSlide" ref={rightSlideRef}>
@@ -804,4 +993,8 @@ function checkIfControlTarget(e: TouchEvent | MouseEvent) {
     return true;
   }
   return false;
+}
+
+function isTextInputTarget(target: EventTarget | null) {
+  return target instanceof HTMLElement && Boolean(target.closest('input, textarea, [contenteditable="true"]'));
 }

@@ -393,6 +393,21 @@ export interface LangPair {
   'AutoDownloadVideosTitle': undefined;
   'AutoDownloadFilesTitle': undefined;
   'AutoplayMedia': undefined;
+  'ContinuousMediaSettings': undefined;
+  'ContinuousMediaDefault': undefined;
+  'ContinuousMediaBrowse': undefined;
+  'ContinuousMediaPause': undefined;
+  'ContinuousMediaResume': undefined;
+  'ContinuousMediaFilter': undefined;
+  'ContinuousMediaFilterAll': undefined;
+  'ContinuousMediaFilterPhotos': undefined;
+  'ContinuousMediaFilterVideos': undefined;
+  'ContinuousMediaPhotoDuration': undefined;
+  'ContinuousMediaAutoSave': undefined;
+  'ContinuousMediaAutoSavePhotos': undefined;
+  'ContinuousMediaAutoSaveVideos': undefined;
+  'ContinuousMediaAutoSaveMaxSize': undefined;
+  'ContinuousMediaFinished': undefined;
   'GifsTab2': undefined;
   'DataAndStorageAutoplayVideos': undefined;
   'FirstName': undefined;
@@ -2339,6 +2354,10 @@ export interface LangPairWithVariables<V = LangVariable> {
   };
   'AutodownloadSizeLimitUpTo': {
     'limit': V;
+  };
+  'ContinuousMediaPosition': {
+    'position': V;
+    'total': V;
   };
   'WebAppAddToAttachmentText': {
     'bot': V;
