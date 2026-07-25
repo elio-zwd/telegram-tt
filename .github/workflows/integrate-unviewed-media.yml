@@ -1,0 +1,77 @@
+name: Integrate unviewed media
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/phase-2-unviewed-media-history
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.11.1
+          cache: npm
+
+      - name: Extract validated feature sources
+        run: |
+          git checkout 3d8486a2b3465dbfe054a25bc7887d201908d2a8 -- \
+            docs/phase-2-unviewed-media-history.md \
+            src/util/channelMediaViewHistory.ts \
+            src/components/mediaViewer/MediaViewerContinuousControls.tsx \
+            src/components/mediaViewer/MediaViewerSlides.tsx \
+            src/components/mediaViewer/MediaViewer.tsx \
+            src/components/left/settings/SettingsDataStorage.tsx
+
+          python <<'PY'
+          from pathlib import Path
+          path = Path('src/assets/localization/fallback.strings')
+          content = path.read_text(encoding='utf-8')
+          marker = '"ContinuousMediaFinished" = "All media viewed";\n'
+          addition = (
+              '"ContinuousMediaUnviewedOnly" = "Only browse unviewed media";\n'
+              '"ContinuousMediaClearViewHistory" = "Clear media view history";\n'
+              '"ContinuousMediaClearViewHistoryDescription" = '
+              '"Forget which channel media you have viewed on this account";\n'
+              '"ContinuousMediaViewHistoryCleared" = "Media view history cleared";\n'
+          )
+          if '"ContinuousMediaUnviewedOnly"' not in content:
+              if marker not in content:
+                  raise RuntimeError('Continuous media localization marker was not found')
+              content = content.replace(marker, marker + addition, 1)
+              path.write_text(content, encoding='utf-8')
+          PY
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate localization types
+        run: npm run lang:ts
+
+      - name: TypeScript check
+        run: npm run check:ts
+
+      - name: Mocked build
+        run: npm run build:mocked
+
+      - name: Restore generated build output
+        run: git restore --source=HEAD --staged --worktree dist
+
+      - name: Commit clean feature
+        run: |
+          rm .github/workflows/integrate-unviewed-media.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: 完成只浏览未看过媒体功能"
+          git push origin HEAD:feat/phase-2-unviewed-media-history
