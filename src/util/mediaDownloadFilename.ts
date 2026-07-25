@@ -89,7 +89,7 @@ export function buildMediaDownloadFilename(
   options: MediaDownloadFilenameOptions = {},
 ) {
   const template = options.template?.trim() || DEFAULT_MEDIA_FILENAME_TEMPLATE;
-  const extension = normalizeExtension(context.extension || getFilenameExtension(context.originalFilename));
+  const extension = normalizeExtension(getFilenameExtension(context.originalFilename) || context.extension);
   const originalName = getFilenameBaseName(context.originalFilename);
   const replacements: Record<MediaFilenameTemplateToken, string> = {
     channel: context.channelTitle || '',
