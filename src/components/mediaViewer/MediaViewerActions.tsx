@@ -5,6 +5,7 @@ import { getActions, withGlobal } from '../../global';
 import type { ApiChat } from '../../api/types';
 import type { ActiveDownloads, MediaViewerOrigin, MessageListType } from '../../types';
 import type { IconName } from '../../types/icons';
+import type { MediaViewerResumePosition } from '../../util/mediaViewerResume';
 import type { MenuItemProps } from '../ui/MenuItem';
 import type { MediaViewerItem, ViewableMedia } from './helpers/getViewableMedia';
 
@@ -16,13 +17,14 @@ import {
 } from '../../global/helpers';
 import {
   selectActiveDownloads,
-  selectAllowedMessageActionsSlow, selectCurrentChat,
+  selectAllowedMessageActionsSlow, selectChatMessage, selectCurrentChat,
   selectCurrentMessageList,
   selectIsChatProtected,
   selectIsMessageProtected,
   selectTabState,
 } from '../../global/selectors';
 import { isUserId } from '../../util/entities/ids';
+import { getMediaViewerResumePosition } from '../../util/mediaViewerResume';
 import selectViewableMedia from './helpers/getViewableMedia';
 
 import useAppLayout from '../../hooks/useAppLayout';
@@ -40,6 +42,8 @@ import MenuItem from '../ui/MenuItem';
 import ProgressSpinner from '../ui/ProgressSpinner';
 
 import './MediaViewerActions.scss';
+
+const RESUME_LABEL = '继续上次位置';
 
 type OwnProps = {
   item?: MediaViewerItem;
@@ -64,6 +68,7 @@ type StateProps = {
   messageListType?: MessageListType;
   origin?: MediaViewerOrigin;
   viewableMedia?: ViewableMedia;
+  resumePosition?: MediaViewerResumePosition;
 };
 
 const MediaViewerActions: FC<OwnProps & StateProps> = ({
@@ -80,6 +85,7 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
   activeDownloads,
   origin,
   viewableMedia,
+  resumePosition,
   onReportAvatar: onReport,
   onCloseMediaViewer,
   onBeforeDelete,
@@ -99,6 +105,14 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
   } = getActions();
 
   const isMessage = item?.type === 'message';
+  const canResume = Boolean(
+    item?.type === 'message'
+    && resumePosition
+    && (
+      resumePosition.messageId !== item.message.id
+      || resumePosition.mediaIndex !== (item.mediaIndex || 0)
+    ),
+  );
 
   const { media } = viewableMedia || {};
   const fileName = media && getMediaFilename(media);
@@ -148,6 +162,21 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
       chatId: avatarOwner.id,
       mediaIndex: 0,
       isAvatarView: true,
+    }, {
+      forceOnHeavyAnimation: true,
+    });
+  });
+
+  const handleResume = useLastCallback(() => {
+    if (item?.type !== 'message' || !resumePosition) return;
+
+    openMediaViewer({
+      origin: origin!,
+      chatId: item.message.chatId,
+      threadId: resumePosition.threadId ? Number(resumePosition.threadId) : undefined,
+      messageId: resumePosition.messageId,
+      mediaIndex: resumePosition.mediaIndex,
+      withDynamicLoading: true,
     }, {
       forceOnHeavyAnimation: true,
     });
@@ -228,6 +257,13 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
 
   if (isMobile) {
     const menuItems: MenuItemProps[] = [];
+    if (canResume) {
+      menuItems.push({
+        icon: 'play',
+        onClick: handleResume,
+        children: RESUME_LABEL,
+      });
+    }
     if (isMessage && item.message.isForwardingAllowed && !item.message.content.action && !isChatProtected) {
       menuItems.push({
         icon: 'forward',
@@ -310,6 +346,16 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
 
   return (
     <div className="MediaViewerActions">
+      {canResume && (
+        <Button
+          round
+          size="smaller"
+          color="translucent-white"
+          ariaLabel={RESUME_LABEL}
+          onClick={handleResume}
+          iconName="play"
+        />
+      )}
       {isMessage && item.message.isForwardingAllowed && !isChatProtected && (
         <Button
           round
@@ -394,7 +440,7 @@ export default memo(withGlobal<OwnProps>(
 
     const chat = selectCurrentChat(global);
     const currentMessageList = selectCurrentMessageList(global);
-    const { threadId } = selectCurrentMessageList(global) || {};
+    const threadId = tabState.mediaViewer.threadId ?? currentMessageList?.threadId;
     const isProtected = pageMedia?.isProtected || selectIsMessageProtected(global, message);
     const activeDownloads = selectActiveDownloads(global);
     const isChatProtected = message && selectIsChatProtected(global, message?.chatId);
@@ -407,6 +453,14 @@ export default memo(withGlobal<OwnProps>(
     const messageListType = currentMessageList?.type;
     const viewableMedia = selectViewableMedia(global, origin, item);
 
+    const storedResumePosition = global.currentUserId && message
+      ? getMediaViewerResumePosition(global.currentUserId, message.chatId, threadId)
+      : undefined;
+    const resumeMessage = storedResumePosition
+      ? selectChatMessage(global, storedResumePosition.chatId, storedResumePosition.messageId)
+      : undefined;
+    const resumePosition = resumeMessage ? storedResumePosition : undefined;
+
     return {
       activeDownloads,
       isProtected,
@@ -417,6 +471,7 @@ export default memo(withGlobal<OwnProps>(
       messageListType,
       origin,
       viewableMedia,
+      resumePosition,
     };
   },
 )(MediaViewerActions));
