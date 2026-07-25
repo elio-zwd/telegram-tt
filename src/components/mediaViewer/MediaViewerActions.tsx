@@ -1,10 +1,15 @@
 import type { FC } from '../../lib/teact/teact';
-import { memo, useMemo } from '../../lib/teact/teact';
+import {
+  memo, useEffect, useMemo, useRef, useState,
+} from '../../lib/teact/teact';
 import { getActions, withGlobal } from '../../global';
 
 import type { ApiChat } from '../../api/types';
-import type { ActiveDownloads, MediaViewerOrigin, MessageListType } from '../../types';
+import type {
+  ActiveDownloads, MediaViewerOrigin, MessageListType, ThreadId,
+} from '../../types';
 import type { IconName } from '../../types/icons';
+import type { MediaViewerHistoryEntry } from '../../util/mediaViewerHistory';
 import type { MenuItemProps } from '../ui/MenuItem';
 import type { MediaViewerItem, ViewableMedia } from './helpers/getViewableMedia';
 
@@ -23,6 +28,11 @@ import {
   selectTabState,
 } from '../../global/selectors';
 import { isUserId } from '../../util/entities/ids';
+import {
+  getMediaViewerHistoryEntry,
+  isSameMediaViewerHistoryPosition,
+  saveMediaViewerHistoryEntry,
+} from '../../util/mediaViewerHistory';
 import selectViewableMedia from './helpers/getViewableMedia';
 
 import useAppLayout from '../../hooks/useAppLayout';
@@ -56,6 +66,9 @@ type OwnProps = {
 
 type StateProps = {
   activeDownloads: ActiveDownloads;
+  accountId?: string;
+  threadId?: ThreadId;
+  withDynamicLoading?: boolean;
   isProtected?: boolean;
   isChatProtected?: boolean;
   canDelete?: boolean;
@@ -71,6 +84,9 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
   mediaData,
   isVideo,
   chat,
+  accountId,
+  threadId,
+  withDynamicLoading,
   isChatProtected,
   isProtected,
   canReportAvatar,
@@ -86,6 +102,8 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
   onForward,
 }) => {
   const [isDeleteModalOpen, openDeleteModal, closeDeleteModal] = useFlag(false);
+  const [resumePosition, setResumePosition] = useState<MediaViewerHistoryEntry>();
+  const historyChatIdRef = useRef<string>();
   const [getZoomChange, setZoomChange] = useZoomChange();
   const { isMobile } = useAppLayout();
 
@@ -99,6 +117,41 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
   } = getActions();
 
   const isMessage = item?.type === 'message';
+  const messageChatId = isMessage ? item.message.chatId : undefined;
+  const messageId = isMessage ? item.message.id : undefined;
+  const messageMediaIndex = isMessage ? item.mediaIndex || 0 : 0;
+
+  useEffect(() => {
+    if (!messageChatId || !messageId) {
+      historyChatIdRef.current = undefined;
+      setResumePosition(undefined);
+      return;
+    }
+
+    const currentPosition = {
+      chatId: messageChatId,
+      messageId,
+      mediaIndex: messageMediaIndex,
+    };
+
+    if (historyChatIdRef.current !== messageChatId) {
+      const previousPosition = getMediaViewerHistoryEntry(messageChatId, accountId);
+      setResumePosition(
+        previousPosition && !isSameMediaViewerHistoryPosition(previousPosition, currentPosition)
+          ? previousPosition
+          : undefined,
+      );
+      historyChatIdRef.current = messageChatId;
+    }
+
+    saveMediaViewerHistoryEntry({
+      ...currentPosition,
+      threadId,
+      updatedAt: Date.now(),
+    }, accountId);
+  }, [accountId, messageChatId, messageId, messageMediaIndex, threadId]);
+
+  const canResumePreviousPosition = Boolean(resumePosition && origin);
 
   const { media } = viewableMedia || {};
   const fileName = media && getMediaFilename(media);
@@ -109,6 +162,22 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
     !isDownloading,
     media && getMediaFormat(media, 'download'),
   );
+
+  const handleResumePreviousPosition = useLastCallback(() => {
+    if (!resumePosition || !origin) return;
+
+    openMediaViewer({
+      origin,
+      chatId: resumePosition.chatId,
+      threadId: resumePosition.threadId,
+      messageId: resumePosition.messageId,
+      mediaIndex: resumePosition.mediaIndex,
+      withDynamicLoading,
+    }, {
+      forceOnHeavyAnimation: true,
+    });
+    setResumePosition(undefined);
+  });
 
   const handleDownloadClick = useLastCallback(() => {
     if (!media) return;
@@ -228,6 +297,13 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
 
   if (isMobile) {
     const menuItems: MenuItemProps[] = [];
+    if (canResumePreviousPosition) {
+      menuItems.push({
+        icon: 'recent',
+        onClick: handleResumePreviousPosition,
+        children: lang('Previous'),
+      });
+    }
     if (isMessage && item.message.isForwardingAllowed && !item.message.content.action && !isChatProtected) {
       menuItems.push({
         icon: 'forward',
@@ -310,6 +386,16 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
 
   return (
     <div className="MediaViewerActions">
+      {canResumePreviousPosition && (
+        <Button
+          round
+          size="smaller"
+          color="translucent-white"
+          ariaLabel={lang('Previous')}
+          onClick={handleResumePreviousPosition}
+          iconName="recent"
+        />
+      )}
       {isMessage && item.message.isForwardingAllowed && !isChatProtected && (
         <Button
           round
@@ -385,7 +471,9 @@ export default memo(withGlobal<OwnProps>(
     item, canUpdateMedia,
   }): Complete<StateProps> => {
     const tabState = selectTabState(global);
-    const { origin } = tabState.mediaViewer;
+    const {
+      origin, threadId: mediaViewerThreadId, withDynamicLoading,
+    } = tabState.mediaViewer;
 
     const message = item?.type === 'message' ? item.message : undefined;
     const pageMedia = item?.type === 'pageBlock' ? item.pageMedia : undefined;
@@ -394,7 +482,7 @@ export default memo(withGlobal<OwnProps>(
 
     const chat = selectCurrentChat(global);
     const currentMessageList = selectCurrentMessageList(global);
-    const { threadId } = selectCurrentMessageList(global) || {};
+    const { threadId } = currentMessageList || {};
     const isProtected = pageMedia?.isProtected || selectIsMessageProtected(global, message);
     const activeDownloads = selectActiveDownloads(global);
     const isChatProtected = message && selectIsChatProtected(global, message?.chatId);
@@ -409,6 +497,9 @@ export default memo(withGlobal<OwnProps>(
 
     return {
       activeDownloads,
+      accountId: global.currentUserId,
+      threadId: mediaViewerThreadId,
+      withDynamicLoading,
       isProtected,
       chat,
       isChatProtected,
