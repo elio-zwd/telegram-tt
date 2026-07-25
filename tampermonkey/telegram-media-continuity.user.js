@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web A 媒体续播
 // @namespace    telegram-air/media-continuity
-// @version      0.2.2
+// @version      0.2.3
 // @description  为 Telegram Web A 提供频道媒体续播与自动连续播放能力
 // @match        https://web.telegram.org/a/*
 // @run-at       document-idle
@@ -447,7 +447,8 @@
       clientX,
       clientY,
     });
-    return target.dispatchEvent(event);
+    target.dispatchEvent(event);
+    return true;
   }
 
   function mediaScore(media, viewerRect) {
