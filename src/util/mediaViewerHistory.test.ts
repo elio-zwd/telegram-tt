@@ -12,7 +12,7 @@ class MemoryStorage {
   private values = new Map<string, string>();
 
   getItem(key: string) {
-    return this.values.get(key) ?? null;
+    return this.values.get(key)!;
   }
 
   setItem(key: string, value: string) {
@@ -66,7 +66,7 @@ describe('mediaViewerHistory', () => {
     storage.setItem(storageKey, '{broken-json');
 
     expect(getMediaViewerHistoryEntry('-1001', 'account-a', storage)).toBeUndefined();
-    expect(storage.getItem(storageKey)).toBeNull();
+    expect(storage.getItem(storageKey)).toBeUndefined();
   });
 
   it('drops invalid entries while retaining valid positions', () => {
@@ -104,7 +104,11 @@ describe('mediaViewerHistory', () => {
     }
 
     expect(getMediaViewerHistoryEntry('1', 'account-a', storage)).toBeUndefined();
-    expect(getMediaViewerHistoryEntry(String(MAX_MEDIA_VIEWER_HISTORY_ENTRIES + 1), 'account-a', storage)).toBeDefined();
+    expect(getMediaViewerHistoryEntry(
+      String(MAX_MEDIA_VIEWER_HISTORY_ENTRIES + 1),
+      'account-a',
+      storage,
+    )).toBeDefined();
   });
 
   it('clears a single channel without affecting other channels', () => {
