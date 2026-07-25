@@ -1,0 +1,31 @@
+name: Integrate unviewed media
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/phase-2-unviewed-media-history
+          fetch-depth: 0
+
+      - name: Remove generated build output
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin master
+          git restore --source=origin/master --staged --worktree dist
+          git clean -fd dist
+          rm .github/workflows/integrate-unviewed-media.yml
+          git add -A
+          git commit -m "chore: 移除未看媒体PR构建产物"
+          git push origin HEAD:feat/phase-2-unviewed-media-history
