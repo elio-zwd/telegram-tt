@@ -472,6 +472,10 @@
 "ContinuousMediaAutoSaveVideos" = "Auto-save videos";
 "ContinuousMediaAutoSaveMaxSize" = "Maximum file size";
 "ContinuousMediaFinished" = "All media viewed";
+"ContinuousMediaUnviewedOnly" = "Only browse unviewed media";
+"ContinuousMediaClearViewHistory" = "Clear media view history";
+"ContinuousMediaClearViewHistoryDescription" = "Forget which channel media you have viewed on this account";
+"ContinuousMediaViewHistoryCleared" = "Media view history cleared";
 "ResumeMediaPosition" = "Continue from last media";
 "GifsTab2" = "GIFs";
 "DataAndStorageAutoplayVideos" = "Videos";

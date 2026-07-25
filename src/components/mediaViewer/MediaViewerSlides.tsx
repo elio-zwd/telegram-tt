@@ -2,7 +2,7 @@ import type { FC } from '../../lib/teact/teact';
 import {
   memo, useEffect, useLayoutEffect, useMemo, useRef, useSignal, useState,
 } from '../../lib/teact/teact';
-import { getActions } from '../../global';
+import { getActions, getGlobal } from '../../global';
 
 import type { MediaViewerOrigin, ThreadId } from '../../types';
 import type { RealTouchEvent } from '../../util/captureEvents';
@@ -18,6 +18,9 @@ import {
   SWIPE_DIRECTION_THRESHOLD,
   SWIPE_DIRECTION_TOLERANCE,
 } from '../../util/captureEvents';
+import {
+  createChannelMediaViewedChecker, getShouldOnlyShowUnviewedMedia, markChannelMediaViewed,
+} from '../../util/channelMediaViewHistory';
 import { clamp, isBetween, round } from '../../util/math';
 import { debounce } from '../../util/schedulers';
 
@@ -114,6 +117,7 @@ const MediaViewerSlides: FC<OwnProps> = ({
   isHidden,
   isLoadingMoreMedia,
   isSynced,
+  threadId,
   loadMoreItemsIfNeeded,
   getNextItem,
   selectItem,
@@ -144,7 +148,7 @@ const MediaViewerSlides: FC<OwnProps> = ({
   const swipeDirectionRef = useRef<SwipeDirection | undefined>(undefined);
   const initialContentRectRef = useRef<DOMRect | undefined>(undefined);
   const isReleasedRef = useRef(false);
-  const changeSlideRef = useRef<(direction: -1 | 1) => boolean>();
+  const changeSlideRef = useRef<(direction: -1 | 1, shouldSkipViewed?: boolean) => boolean>();
   const savedMediaHashesRef = useRef<Record<string, true>>({});
   const mediaReadyDataRef = useRef<MediaViewerContentReadyData>();
   const [isActive, setIsActive] = useState(true);
@@ -230,9 +234,51 @@ const MediaViewerSlides: FC<OwnProps> = ({
     downloadMedia({ media: data.media, originMessage: data.message });
   });
 
+  const getNextAutomaticItem = useLastCallback((from: MediaViewerItem, direction: -1 | 1) => {
+    let nextItem = getNextItem(from, direction);
+    const accountId = getGlobal().currentUserId;
+    if (!accountId || !getShouldOnlyShowUnviewedMedia()) return nextItem;
+
+    const isViewed = createChannelMediaViewedChecker();
+    const checkedKeys = new Set<string>();
+    while (nextItem?.type === 'message') {
+      const mediaIndex = nextItem.mediaIndex ?? 0;
+      const key = `${nextItem.message.chatId}:${nextItem.message.id}:${mediaIndex}`;
+      if (checkedKeys.has(key)) return undefined;
+      checkedKeys.add(key);
+
+      if (!isViewed({
+        accountId,
+        chatId: nextItem.message.chatId,
+        threadId,
+        messageId: nextItem.message.id,
+        mediaIndex,
+      })) {
+        return nextItem;
+      }
+
+      nextItem = getNextItem(nextItem, direction);
+    }
+
+    return nextItem;
+  });
+
   const handleMediaReady = useLastCallback((data: MediaViewerContentReadyData) => {
     const currentItem = activeItemRef.current;
     if (!currentItem) return;
+
+    const accountId = getGlobal().currentUserId;
+    const isMatchingMessage = currentItem.type === 'message'
+      && data.message?.id === currentItem.message.id;
+    if (isContinuousMediaAvailable && accountId && isMatchingMessage && !data.isProtected) {
+      markChannelMediaViewed({
+        accountId,
+        chatId: currentItem.message.chatId,
+        threadId,
+        messageId: currentItem.message.id,
+        mediaIndex: currentItem.mediaIndex ?? 0,
+      });
+    }
 
     mediaReadyDataRef.current = data;
     setMediaReadyItem(currentItem);
@@ -245,7 +291,7 @@ const MediaViewerSlides: FC<OwnProps> = ({
     const changeSlide = changeSlideRef.current;
     if (!changeSlide) return;
 
-    const hasChanged = changeSlide(continuousMediaDirection);
+    const hasChanged = changeSlide(continuousMediaDirection, true);
     if (hasChanged) {
       setIsAwaitingNextMedia(false);
       return;
@@ -346,10 +392,12 @@ const MediaViewerSlides: FC<OwnProps> = ({
       lastGestureTime = Date.now();
     }, 500, false, true);
 
-    const changeSlide = (direction: -1 | 1) => {
+    const changeSlide = (direction: -1 | 1, shouldSkipViewed = false) => {
       const cActiveItem = activeItemRef.current;
       if (cActiveItem === undefined) return false;
-      const nextItem = getNextItem(cActiveItem, direction);
+      const nextItem = shouldSkipViewed
+        ? getNextAutomaticItem(cActiveItem, direction)
+        : getNextItem(cActiveItem, direction);
       if (nextItem !== undefined) {
         onContinuousMediaNavigation(direction);
         const offset = (windowWidth + SLIDES_GAP) * direction;
@@ -803,6 +851,7 @@ const MediaViewerSlides: FC<OwnProps> = ({
     activeItemRef,
     clearSwipeDirectionDebounced,
     clickXThreshold,
+    getNextAutomaticItem,
     getNextItem,
     isFullscreen,
     isHidden,
