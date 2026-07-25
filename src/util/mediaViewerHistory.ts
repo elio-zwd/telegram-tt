@@ -29,11 +29,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function isValidThreadId(value: unknown): value is ThreadId | undefined {
+  return value === undefined
+    || typeof value === 'string'
+    || (typeof value === 'number' && Number.isSafeInteger(value));
+}
+
 function isValidEntry(value: unknown): value is MediaViewerHistoryEntry {
   if (!isRecord(value)) return false;
 
   return typeof value.chatId === 'string'
     && value.chatId.length > 0
+    && isValidThreadId(value.threadId)
     && typeof value.messageId === 'number'
     && Number.isSafeInteger(value.messageId)
     && value.messageId > 0
