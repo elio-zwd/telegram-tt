@@ -85,15 +85,17 @@ src/components/mediaViewer/MediaViewerActions.tsx
 ```bash
 npm ci
 npm test -- src/util/mediaViewerResume.test.ts
-npm run lint
-npm run build
+npm run check
+npm run build:mocked
 ```
 
-如项目的测试脚本不接受文件参数，可执行：
+执行完整测试时使用：
 
 ```bash
 npm test
 ```
+
+`build:mocked` 不要求真实 Telegram API 凭据，适合作为本分支的本地构建门禁。
 
 ## 手工验收
 
