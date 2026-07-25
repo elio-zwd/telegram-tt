@@ -23,6 +23,10 @@ import {
   selectTabState,
 } from '../../global/selectors';
 import { isUserId } from '../../util/entities/ids';
+import {
+  buildMediaDownloadFilename,
+  loadMediaFilenameTemplate,
+} from '../../util/mediaDownloadFilename';
 import selectViewableMedia from './helpers/getViewableMedia';
 
 import useAppLayout from '../../hooks/useAppLayout';
@@ -101,7 +105,16 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
   const isMessage = item?.type === 'message';
 
   const { media } = viewableMedia || {};
-  const fileName = media && getMediaFilename(media);
+  const originalFileName = media && getMediaFilename(media);
+  const fileName = media && isMessage ? buildMediaDownloadFilename({
+    channelTitle: chat?.title,
+    messageDate: new Date(item.message.date * 1000),
+    messageId: item.message.id,
+    mediaIndex: item.mediaIndex,
+    originalFilename: originalFileName,
+  }, {
+    template: loadMediaFilenameTemplate(),
+  }) : originalFileName;
   const isDownloading = media && getIsDownloading(activeDownloads, media);
 
   const { loadProgress: downloadProgress } = useMediaWithLoadProgress(
@@ -117,7 +130,8 @@ const MediaViewerActions: FC<OwnProps & StateProps> = ({
       cancelMediaDownload({ media });
     } else {
       const message = item?.type === 'message' ? item.message : undefined;
-      downloadMedia({ media, originMessage: message });
+      const mediaWithFilename = fileName ? { ...media, fileName } : media;
+      downloadMedia({ media: mediaWithFilename, originMessage: message });
     }
   });
 
