@@ -2,6 +2,12 @@ name: Web K userscript
 
 on:
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
     paths:
       - .npmrc
       - package.json
