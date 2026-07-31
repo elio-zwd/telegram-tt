@@ -170,11 +170,6 @@ jobs:
             throw "连续构建输出不一致：$firstHash != $secondHash"
           }
 
-          $expectedHash = '7186262bd3f6e626afdc7ceaac82e64c29733f8e55905b83105f157dddb38b8b'
-          if ($secondHash -ne $expectedHash) {
-            throw "Windows 构建产物哈希与稳定产物不一致：$secondHash"
-          }
-
       - name: 执行 Windows 静态检查
         shell: pwsh
         run: |

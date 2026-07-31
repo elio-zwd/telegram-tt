@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,33 +7,90 @@ import { WEB_K_MATCH, createWebKUserscriptMetadata } from './web-k-userscript-me
 
 const BUILD_DIR = dirname(fileURLToPath(import.meta.url));
 const TAMPERMONKEY_DIR = resolve(BUILD_DIR, '..');
+const SOURCE_DIR = resolve(TAMPERMONKEY_DIR, 'src/web-k');
 const OUTPUT_FILE_NAME = 'telegram-media-continuity-web-k.user.js';
 const OUTPUT_PATH = resolve(TAMPERMONKEY_DIR, OUTPUT_FILE_NAME);
-const LEGACY_MAIN_PATH = resolve(TAMPERMONKEY_DIR, 'src/web-k/legacy-main.js');
-const EXPECTED_LEGACY_BLOB_SHA = 'bff54d20036894a2e4a17655856a6325f66a6748';
 const GENERATED_NOTICE = '// 此文件由构建生成，请勿直接手工修改。';
+const REQUIRED_MODULE_PATHS = Object.freeze([
+  'version.js',
+  'entry.js',
+  'legacy-main.js',
+  'core/runtime.js',
+  'core/lifecycle.js',
+  'core/cleanup.js',
+  'core/settings.js',
+  'core/logger.js',
+  'platform/dom.js',
+  'platform/media-viewer.js',
+  'platform/message-list.js',
+  'platform/navigation.js',
+]);
+const CORE_FORBIDDEN_TOKENS = Object.freeze([
+  '.media-viewer-',
+  'data-mid',
+  'data-peer-id',
+  'album-item',
+  'bubbles-scrollable',
+]);
+const LEGACY_FORBIDDEN_SELECTORS = Object.freeze([
+  '.media-viewer-whole',
+  '.media-viewer-movers',
+  '.media-viewer-switcher-left',
+  '.media-viewer-switcher-right',
+  '.scrollable.scrollable-y.bubbles-scrollable',
+  '[data-mid][data-peer-id]',
+]);
 
 function assertCondition(condition, message) {
   if (!condition) throw new Error(message);
-}
-
-function createGitBlobSha(content) {
-  const body = Buffer.from(content);
-  return createHash('sha1')
-    .update(`blob ${body.length}\0`)
-    .update(body)
-    .digest('hex');
 }
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+async function readRequiredModules() {
+  const entries = await Promise.all(REQUIRED_MODULE_PATHS.map(async (modulePath) => {
+    const content = await readFile(resolve(SOURCE_DIR, modulePath), 'utf8');
+    return [modulePath, content];
+  }));
+  return new Map(entries);
+}
+
+function verifyModuleBoundaries(modules) {
+  for (const [modulePath, content] of modules) {
+    if (!modulePath.startsWith('core/')) continue;
+    for (const token of CORE_FORBIDDEN_TOKENS) {
+      assertCondition(!content.includes(token), `核心模块包含 Telegram DOM 标记：${modulePath} -> ${token}`);
+    }
+  }
+
+  const legacyMain = modules.get('legacy-main.js');
+  for (const selector of LEGACY_FORBIDDEN_SELECTORS) {
+    assertCondition(!legacyMain.includes(selector), `legacy-main.js 仍直接查询平台选择器：${selector}`);
+  }
+
+  const settings = modules.get('core/settings.js');
+  assertCondition(settings.includes("const STORAGE_KEY = 'tt.mediaContinuity.v1';"), '设置模块未保留原 storage key');
+
+  const mediaViewer = modules.get('platform/media-viewer.js');
+  assertCondition(mediaViewer.includes("document.querySelector('.media-viewer-whole')"), '媒体查看器选择器未集中到平台层');
+  assertCondition(mediaViewer.includes("viewer.querySelector('.media-viewer-movers')"), '媒体 root 选择器未集中到平台层');
+
+  const navigation = modules.get('platform/navigation.js');
+  assertCondition(navigation.includes("'.media-viewer-switcher-left'"), '上一项选择器未集中到导航平台层');
+  assertCondition(navigation.includes("'.media-viewer-switcher-right'"), '下一项选择器未集中到导航平台层');
+
+  const messageList = modules.get('platform/message-list.js');
+  assertCondition(messageList.includes("'.scrollable.scrollable-y.bubbles-scrollable'"), '聊天滚动容器选择器未集中到消息列表平台层');
+  assertCondition(messageList.includes("'[data-mid][data-peer-id]'"), '消息身份选择器未集中到消息列表平台层');
+}
+
 async function verifyGeneratedOutput() {
-  const [generated, legacyMain, topLevelEntries] = await Promise.all([
+  const [generated, topLevelEntries, modules] = await Promise.all([
     readFile(OUTPUT_PATH, 'utf8'),
-    readFile(LEGACY_MAIN_PATH, 'utf8'),
     readdir(TAMPERMONKEY_DIR, { withFileTypes: true }),
+    readRequiredModules(),
   ]);
 
   const expectedMetadata = createWebKUserscriptMetadata();
@@ -84,17 +140,13 @@ async function verifyGeneratedOutput() {
     `检测到额外 Web K 构建产物：${unexpectedOutputs.join(', ')}`,
   );
 
-  const legacyBlobSha = createGitBlobSha(legacyMain);
-  assertCondition(
-    legacyBlobSha === EXPECTED_LEGACY_BLOB_SHA,
-    `legacy-main.js 已偏离稳定脚本 Blob：${legacyBlobSha}`,
-  );
+  verifyModuleBoundaries(modules);
 
   console.log([
     '[check:tampermonkey:web-k] 通过',
     `version=${WEB_K_VERSION}`,
     `match=${WEB_K_MATCH}`,
-    `legacyBlob=${legacyBlobSha}`,
+    `modules=${modules.size}`,
     `output=${OUTPUT_FILE_NAME}`,
   ].join('\n'));
 }
