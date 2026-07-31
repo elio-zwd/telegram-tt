@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web K 媒体续播（兼容验证版）
 // @namespace    telegram-air/media-continuity
-// @version      0.3.0-k2
+// @version      0.3.0-k3
 // @description  为 Telegram Web K 提供图片和视频连续浏览能力
 // @match        https://web.telegram.org/k/*
 // @run-at       document-idle
@@ -199,22 +199,8 @@
     return `${media.tagName}|${getMediaNodeId(media)}|${size}|${source.slice(-120)}`;
   }
 
-  function isMediaScaled(media, viewer) {
-    let current = media;
-    for (let depth = 0; current && current !== viewer && depth < 6; depth += 1) {
-      const transform = getComputedStyle(current).transform;
-      const match = transform && transform.match(/^matrix\(([^)]+)\)$/);
-      if (match) {
-        const values = match[1].split(',').map((value) => Number.parseFloat(value.trim()));
-        if (values.length >= 4) {
-          const scaleX = Math.hypot(values[0], values[1]);
-          const scaleY = Math.hypot(values[2], values[3]);
-          if (Math.abs(scaleX - 1) > 0.08 || Math.abs(scaleY - 1) > 0.08) return true;
-        }
-      }
-      current = current.parentElement;
-    }
-    return false;
+  function isMediaZoomed(viewer) {
+    return viewer.classList.contains('is-zooming');
   }
 
   function dispatchNavigation(viewer, direction) {
@@ -367,6 +353,7 @@
       this.hovered = false;
       this.interacting = false;
       this.isNavigating = false;
+      this.isZoomed = isMediaZoomed(viewer);
       this.destroyed = false;
       this.currentMedia = undefined;
       this.currentFingerprint = 'none';
@@ -429,6 +416,9 @@
     refresh() {
       if (this.destroyed || !this.viewer.isConnected) return;
       const media = findActiveMedia(this.viewer);
+      const isZoomed = isMediaZoomed(this.viewer);
+      const hasZoomChanged = isZoomed !== this.isZoomed;
+      this.isZoomed = isZoomed;
       this.panel.render(this.viewState());
       if (!media) {
         this.panel.setStatus('等待媒体加载');
@@ -437,6 +427,8 @@
       const nextFingerprint = mediaFingerprint(media);
       if (media !== this.currentMedia || nextFingerprint !== this.currentFingerprint) {
         this.bindMedia(media, nextFingerprint);
+      } else if (hasZoomChanged) {
+        this.scheduleForCurrentMedia(true);
       }
     }
 
@@ -513,7 +505,7 @@
         && document.hasFocus()
         && !this.hovered
         && !this.interacting
-        && !isMediaScaled(this.currentMedia, this.viewer);
+        && !this.isZoomed;
     }
 
     scheduleForCurrentMedia(forceRestart = false) {
@@ -546,7 +538,7 @@
       if (!this.active) return this.panel.setStatus('连续浏览已关闭');
       if (this.paused) return this.panel.setStatus('连续浏览已暂停');
       if (document.hidden || !document.hasFocus()) return this.panel.setStatus('页面失焦，倒计时暂停');
-      if (this.hovered || this.interacting || isMediaScaled(this.currentMedia, this.viewer)) {
+      if (this.hovered || this.interacting || this.isZoomed) {
         return this.panel.setStatus('正在查看图片，倒计时暂停');
       }
       if (!this.canRunPhotoTimer() || this.timerId) return undefined;
@@ -696,6 +688,7 @@
           previousButton: describeElement(viewer && getNavigationButton(viewer, -1)),
           nextButton: describeElement(viewer && getNavigationButton(viewer, 1)),
           navigation: viewer ? navigationAvailability(viewer) : { previous: false, next: false },
+          isZoomed: Boolean(viewer && isMediaZoomed(viewer)),
           hostMounted: Boolean(document.getElementById(SCRIPT_ID)),
         };
         console.log('[Telegram Media Continuity] Web K DOM 探测结果', result);
@@ -719,7 +712,7 @@
       getSummary() {
         const viewer = findMediaViewer();
         return {
-          version: '0.3.0-k2',
+          version: '0.3.0-k3',
           client: 'web-k',
           settings: loadSettings(),
           viewerDetected: Boolean(viewer),
