@@ -1,13 +1,10 @@
-# Telegram 媒体续播油猴脚本
+# Telegram Web A 媒体续播油猴脚本
 
-当前仓库包含两个脚本：
+脚本路径：
 
 ```text
 tampermonkey/telegram-media-continuity.user.js
-tampermonkey/telegram-media-continuity-web-k.user.js
 ```
-
-## Telegram Web A
 
 适用页面：
 
@@ -15,147 +12,208 @@ tampermonkey/telegram-media-continuity-web-k.user.js
 https://web.telegram.org/a/*
 ```
 
-脚本：
+## 功能范围
 
-```text
-tampermonkey/telegram-media-continuity.user.js
-```
+第一版已经实现：
 
-该脚本是原有 Web A 第一版，支持频道媒体连续浏览和有限的续播位置记录。
+- 通过 DOM 特征识别 Telegram Web A 媒体查看器；
+- 通过面积、可见性和视口中心距离识别当前活动图片或视频；
+- 识别官方上一项、下一项和关闭控件；
+- 图片加载完成后按 2、3、5、8、10、15 或 30 秒自动切换；
+- 视频真正触发 `ended` 后自动切换；
+- 鼠标悬停、图片拖动或缩放、标签页后台、浏览器失焦时暂停图片倒计时；
+- 用户手动暂停视频后暂停连续浏览；
+- 手动上一项或下一项后连续浏览保持开启；
+- 到当前媒体末尾停止，不循环；
+- 使用 Shadow DOM 隔离控制条样式；
+- 保存连续浏览开关、图片停留时间和控制条折叠状态；
+- 关闭查看器时保存可确认的频道、话题、消息和相册位置；
+- 本地最多保留 100 条位置记录；
+- 损坏、非法或版本不兼容的数据自动清理；
+- 只有上次消息及媒体仍存在于当前 DOM 时，才显示“继续上次位置”；
+- 页面结构无法可靠识别时安全失效，不阻断 Telegram 原有操作。
 
-## Telegram Web K
+第一版不会：
 
-适用页面：
+- 调用 Telegram API、Bot API 或 MTProto；
+- 读取 Telegram 私有状态、IndexedDB 或打包模块；
+- 上传聊天内容、账号数据或媒体链接；
+- 主动请求整段频道历史；
+- 自动保存或批量下载媒体；
+- 绕过频道保护、付费媒体或权限限制；
+- 跨频道连续浏览。
 
-```text
-https://web.telegram.org/k/*
-```
+## 安装
 
-验证脚本：
+1. 浏览器安装 Tampermonkey。
+2. 打开 `telegram-media-continuity.user.js` 的 GitHub Raw 页面。
+3. Tampermonkey 弹出安装页后确认安装。
+4. 打开或刷新 Telegram Web A。
+5. 进入频道并打开一张普通图片或视频。
+6. 媒体查看器识别成功后，底部会出现 `Telegram TT` 控制条。
 
-```text
-tampermonkey/telegram-media-continuity-web-k.user.js
-```
+脚本保持 `@grant none`，只使用页面 DOM、原生媒体事件和浏览器 `localStorage`。
 
-当前版本：
+## 控制条
 
-```text
-0.3.0-k3
-```
-
-Web K 与 Web A 使用不同的媒体查看器 DOM，因此不能只给 Web A 脚本增加一个 `@match`。
-
-Web K 验证脚本当前支持：
-
-- 识别 `.media-viewer-whole` 媒体查看器；
-- 在 `.media-viewer-movers` 中识别当前图片或视频；
-- 使用 Web K 官方左右切换控件；
-- 图片按设定时长自动切换；
-- 视频自然结束后切换；
-- 悬停、页面失焦、用户交互和缩放时暂停；
-- 使用 `.media-viewer-whole.is-zooming` 判断真实用户缩放；
-- Shadow DOM 控制条；
-- 安全失效，不阻断 Telegram 原有操作。
-
-当前 Web K 脚本仍是兼容验证版，尚未迁移 Web A 的频道续播位置功能。
-
-## 安装 Web K 验证脚本
-
-1. 在 Tampermonkey 中停用旧 Web A 脚本，避免测试结果混淆。
-2. 安装 `telegram-media-continuity-web-k.user.js`。
-3. 刷新 Telegram Web K。
-4. 打开频道中的普通图片或视频。
-5. 媒体查看器识别成功后，底部出现 TT 控制条。
-
-脚本保持：
-
-```text
-@grant none
-```
-
-只使用页面 DOM、浏览器媒体事件和 `localStorage`，不调用 Telegram API。
-
-## Web K 调试
-
-控制台执行：
-
-```js
-TelegramMediaContinuity.getSummary();
-TelegramMediaContinuity.inspect();
-TelegramMediaContinuity.testPrevious();
-TelegramMediaContinuity.testNext();
-```
-
-开启日志：
-
-```js
-TelegramMediaContinuity.enableDebug(true);
-```
-
-`inspect()` 只输出：
-
-- 标签和类名；
-- 节点尺寸；
-- 图片、视频数量；
-- 左右导航可用性；
-- 是否处于 `is-zooming`；
-- 控制条是否挂载。
-
-不会输出聊天正文或媒体 URL。
-
-## Web K 最小验收
-
-### 默认图片
-
-1. 打开普通图片。
-2. 执行 `TelegramMediaContinuity.inspect()`。
-3. 确认 `isZoomed` 为 `false`。
-4. 开启连续浏览。
-5. 确认出现图片倒计时。
-6. 连续自动切换至少三张图片。
-
-### 用户缩放
-
-1. 在图片倒计时期间进入 Telegram 官方缩放状态。
-2. 确认 `inspect().isZoomed` 为 `true`。
-3. 等待超过设定图片时长，图片不能切换。
-4. 退出缩放。
-5. 确认 `isZoomed` 恢复为 `false`。
-6. 倒计时从完整时长重新开始。
-
-### 视频
-
-1. 打开普通非循环视频。
-2. 开启连续浏览。
-3. 视频自然结束后进入下一项。
-4. 循环视频应提示手动切换。
-
-### 安全回归
-
-确认脚本不影响：
-
-- Telegram 聊天滚动；
-- 媒体查看器关闭；
-- 官方左右按钮；
-- 视频控制栏；
-- 频道导航。
+- **连续浏览：开／关**：启用或关闭自动推进；
+- **暂停／继续**：临时暂停或恢复当前连续浏览会话；
+- **←／→**：触发 Telegram 官方上一项或下一项操作；
+- **图片时间**：选择图片停留时间；
+- **继续上次位置**：仅当历史消息媒体仍在当前页面 DOM 中、可以安全点击时显示；
+- **×**：折叠为一个 `TT` 小按钮，折叠状态会持久化。
 
 ## 本地数据
 
-两个脚本当前共用：
+存储键：
 
 ```text
 tt.mediaContinuity.v1
 ```
 
-Web K 验证脚本只读取和更新其中的基础设置：
+数据包括：
 
 - 连续浏览开关；
 - 图片停留时间；
-- 控制条折叠状态。
+- 控制条折叠状态；
+- 账号槽位标识；
+- 频道标识；
+- 话题标识；
+- 消息标识；
+- 相册媒体序号；
+- 官方目标链接；
+- 更新时间。
 
-不会修改 Web A 已保存的位置记录。
+脚本不会把媒体资源地址写入持久化存储。媒体地址只在当前页面内用于判断媒体是否已经切换，页面关闭后不会保留。
+
+## DOM 探测模式
+
+在 Telegram Web A 地址后增加：
+
+```text
+?ttMediaDebug=1
+```
+
+也可以在浏览器控制台执行：
+
+```js
+TelegramMediaContinuity.enableDebug(true);
+```
+
+查看当前探测结果：
+
+```js
+TelegramMediaContinuity.inspect();
+```
+
+返回内容只包括：
+
+- 标签名；
+- `role`；
+- `aria-label`；
+- `title`；
+- 类名；
+- `data-*` 属性名称；
+- 节点尺寸；
+- 按钮和媒体数量；
+- 是否确认处于频道上下文。
+
+不会输出聊天正文或媒体资源地址。
+
+其他调试命令：
+
+```js
+TelegramMediaContinuity.getSummary();
+TelegramMediaContinuity.rescan();
+TelegramMediaContinuity.resetStorage();
+```
+
+## 最小验收
+
+### 1. 页面安全
+
+1. 在普通聊天页面启用脚本。
+2. 不打开媒体查看器。
+3. 确认聊天、输入、滚动和导航正常。
+4. 控制台没有脚本产生的未捕获异常。
+
+### 2. 连续图片
+
+1. 进入频道并打开图片。
+2. 开启连续浏览。
+3. 等待图片完整加载。
+4. 默认约 5 秒后进入下一项。
+5. 切换后重新开始完整倒计时。
+
+### 3. 自动暂停
+
+1. 图片倒计时期间把鼠标移入图片。
+2. 等待超过设定时间，图片不能切换。
+3. 鼠标移出后从完整时间重新计时。
+4. 切换到其他浏览器标签页，不能在后台切换。
+5. 返回 Telegram 后重新计时。
+6. 缩放或拖动图片时不能自动切换。
+
+### 4. 连续视频
+
+1. 打开普通视频并开启连续浏览。
+2. 视频结束后进入下一项。
+3. 用户手动暂停视频后，控制条变为暂停状态。
+4. 点击“继续”后恢复当前会话。
+5. 浏览器拒绝自动播放时，停留并提示“点击视频继续播放”，不能直接跳过。
+
+### 5. 手动切换
+
+1. 连续浏览开启时点击官方下一项，或控制条的 `→`。
+2. 连续浏览仍保持开启。
+3. 新图片重新计时，新视频重新绑定结束事件。
+
+### 6. 队列末尾
+
+1. 到达当前可见媒体末尾。
+2. 脚本停止连续浏览。
+3. 不循环，不连续快速点击。
+4. 状态显示“已到当前媒体末尾”。
+
+### 7. 位置记录
+
+1. 在频道 A 打开媒体并切换到另一个媒体。
+2. 关闭媒体查看器。
+3. 在同一频道重新打开其他媒体。
+4. 原消息及其媒体仍在当前 DOM 时，显示“继续上次位置”。
+5. 点击后关闭当前查看器并重新点击历史媒体。
+6. 进入频道 B 时不能使用频道 A 的记录。
+7. 可以识别话题标识时，不同话题互不串用。
+
+### 8. 损坏数据
+
+1. 在开发者工具中把 `tt.mediaContinuity.v1` 改成非法 JSON。
+2. 刷新 Telegram Web A。
+3. 脚本自动清理非法数据。
+4. Telegram 原页面仍能正常使用。
+
+### 9. 安全失效
+
+1. 临时修改 Telegram DOM，使查看器或导航按钮无法识别。
+2. 脚本不注入控制条，或显示结构变化提示。
+3. 不拦截 Telegram 官方操作。
+4. 不造成白屏或持续点击。
+
+## 已知边界
+
+- 油猴脚本无法像源码版一样调用 `openMediaViewer`、消息缓存选择器或动态媒体搜索动作。
+- “继续上次位置”只在历史媒体仍存在于当前 DOM 时显示，避免跳转空白位置或调用不稳定的私有接口。
+- 频道识别采用显式 `data-*` 类型信息或频道订阅者提示；无法确认频道类型时仍可连续浏览，但不会保存续播位置。
+- Telegram Web A 页面结构更新后，可能需要根据 DOM 探测结果调整定位评分。
+- 短循环视频不会等待不存在的 `ended` 事件，第一版提示用户手动切换。
+- 没有主动加载完整频道历史，因此“末尾”表示 Telegram 当前查看器能够提供的末尾。
 
 ## 回退
 
-出现异常时在 Tampermonkey 中停用对应脚本即可。脚本不修改 Telegram 服务端数据。
+出现异常时可先在 Tampermonkey 中停用脚本。脚本不修改 Telegram 代码和数据，停用后 Telegram Web A 会恢复原始行为。
+
+需要清理本地记录时，在控制台执行：
+
+```js
+TelegramMediaContinuity.resetStorage();
+```
