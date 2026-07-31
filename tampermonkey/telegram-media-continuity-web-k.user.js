@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web K 媒体续播（兼容验证版）
 // @namespace    telegram-air/media-continuity
-// @version      0.3.0-k3
+// @version      0.3.1-k4
 // @description  为 Telegram Web K 提供图片和视频连续浏览能力
 // @match        https://web.telegram.org/k/*
 // @run-at       document-idle
@@ -16,6 +16,21 @@
   const SCAN_DELAY_MS = 160;
   const NAVIGATION_TIMEOUT_MS = 3000;
   const INTERACTION_COOLDOWN_MS = 900;
+  const CLOSE_PROBE_TIMEOUT_MS = 6000;
+  const CLOSE_PROBE_POLL_MS = 50;
+  const PROBE_MESSAGE_ID_ATTRIBUTES = Object.freeze([
+    'data-mid',
+    'data-message-id',
+    'data-msg-id',
+    'data-message',
+  ]);
+  const PROBE_PEER_ID_ATTRIBUTES = Object.freeze(['data-peer-id', 'data-peer']);
+  const PROBE_NUMERIC_ATTRIBUTES = Object.freeze([
+    ...PROBE_MESSAGE_ID_ATTRIBUTES,
+    ...PROBE_PEER_ID_ATTRIBUTES,
+    'data-index',
+    'data-media-index',
+  ]);
   const DURATIONS = [2000, 3000, 5000, 8000, 10000, 15000, 30000];
   const DEFAULT_SETTINGS = Object.freeze({
     continuousEnabled: false,
@@ -29,6 +44,11 @@
     scanTimer: 0,
     periodicTimer: 0,
     debugEnabled: false,
+    lastSourceProbe: undefined,
+    closeProbe: undefined,
+    closeProbeInternal: undefined,
+    closeProbeTimer: 0,
+    closeProbeCleanup: [],
   };
 
   const mediaNodeIds = new WeakMap();
@@ -56,6 +76,16 @@
       && !element.hasAttribute('hidden');
   }
 
+  function getNumericDataAttributes(element) {
+    if (!(element instanceof Element)) return {};
+    const result = {};
+    for (const attributeName of PROBE_NUMERIC_ATTRIBUTES) {
+      const value = element.getAttribute(attributeName);
+      if (value && /^-?\d+$/.test(value)) result[attributeName] = value;
+    }
+    return result;
+  }
+
   function describeElement(element) {
     if (!(element instanceof Element)) return undefined;
     const rect = element.getBoundingClientRect();
@@ -63,7 +93,14 @@
       tag: element.tagName.toLowerCase(),
       classNames: Array.from(element.classList).slice(0, 12),
       role: element.getAttribute('role') || '',
-      ariaLabel: element.getAttribute('aria-label') || '',
+      hasAriaLabel: element.hasAttribute('aria-label'),
+      hasTitle: element.hasAttribute('title'),
+      hasHref: element instanceof HTMLAnchorElement && element.hasAttribute('href'),
+      dataAttributeNames: Array.from(element.attributes)
+        .filter((attribute) => attribute.name.startsWith('data-'))
+        .slice(0, 16)
+        .map((attribute) => attribute.name),
+      numericDataAttributes: getNumericDataAttributes(element),
       rect: {
         width: Math.round(rect.width),
         height: Math.round(rect.height),
@@ -72,7 +109,397 @@
       },
       imageCount: element.querySelectorAll('img').length,
       videoCount: element.querySelectorAll('video').length,
+      buttonCount: element.querySelectorAll('button, [role="button"]').length,
     };
+  }
+
+  function classifyUrlToken(value) {
+    if (!value) return 'empty';
+    if (/^-?\d+$/.test(value)) return 'number';
+    return 'text';
+  }
+
+  function describeHrefPattern(element) {
+    if (!(element instanceof HTMLAnchorElement) || !element.hasAttribute('href')) return undefined;
+    try {
+      const url = new URL(element.href, location.href);
+      const hashPath = url.hash.split('?')[0].replace(/^#/, '');
+      return {
+        protocol: url.protocol,
+        host: ['web.telegram.org', 't.me', 'telegram.me'].includes(url.hostname)
+          ? url.hostname
+          : 'other',
+        pathPattern: url.pathname.split('/').filter(Boolean).slice(0, 8).map(classifyUrlToken),
+        hashPattern: hashPath.split('/').filter(Boolean).slice(0, 8).map(classifyUrlToken),
+        queryKeys: Array.from(url.searchParams.keys()).slice(0, 12),
+        hashQueryKeys: url.hash.includes('?')
+          ? Array.from(new URLSearchParams(url.hash.slice(url.hash.indexOf('?') + 1)).keys()).slice(0, 12)
+          : [],
+      };
+    } catch (error) {
+      return { invalid: true };
+    }
+  }
+
+  function describeControl(element) {
+    const description = describeElement(element);
+    if (!description) return undefined;
+    return {
+      ...description,
+      hasSvg: Boolean(element.querySelector('svg')),
+      hrefPattern: describeHrefPattern(element),
+    };
+  }
+
+  function findProbeMessageNode(target) {
+    let current = target instanceof Element ? target : undefined;
+    for (let depth = 0; current && depth < 14; depth += 1) {
+      const hasMessageId = PROBE_MESSAGE_ID_ATTRIBUTES.some((attributeName) => {
+        const value = current.getAttribute(attributeName);
+        return Boolean(value && /^-?\d+$/.test(value));
+      });
+      if (hasMessageId) return current;
+      current = current.parentElement;
+    }
+    return undefined;
+  }
+
+  function getProbeIdentity(messageNode) {
+    if (!(messageNode instanceof Element)) return undefined;
+    let messageId = '';
+    let peerId = '';
+    for (const attributeName of PROBE_MESSAGE_ID_ATTRIBUTES) {
+      const value = messageNode.getAttribute(attributeName);
+      if (value && /^-?\d+$/.test(value)) {
+        messageId = value;
+        break;
+      }
+    }
+    for (const attributeName of PROBE_PEER_ID_ATTRIBUTES) {
+      const value = messageNode.getAttribute(attributeName);
+      if (value && /^-?\d+$/.test(value)) {
+        peerId = value;
+        break;
+      }
+    }
+    return messageId ? { messageId, peerId } : undefined;
+  }
+
+  function findProbeMediaFromTarget(target, messageNode) {
+    if (!(target instanceof Element) || !(messageNode instanceof Element)) return undefined;
+    if (target.matches('img, video')) return target;
+    let current = target;
+    while (current && current !== messageNode) {
+      const media = current.querySelectorAll('img, video');
+      if (media.length === 1) return media[0];
+      current = current.parentElement;
+    }
+    return undefined;
+  }
+
+  function getProbeAlbumIndex(messageNode, media) {
+    if (!(messageNode instanceof Element) || !(media instanceof Element)) return 0;
+    const mediaItems = Array.from(messageNode.querySelectorAll('img, video'))
+      .filter((item) => {
+        const rect = item.getBoundingClientRect();
+        return rect.width >= 32 && rect.height >= 32;
+      });
+    const index = mediaItems.indexOf(media);
+    return index >= 0 ? index : 0;
+  }
+
+  function captureSourceProbe(event) {
+    const target = event.target;
+    if (!(target instanceof Element) || target.closest(`#${SCRIPT_ID}`) || findMediaViewer()) return;
+    const messageNode = findProbeMessageNode(target);
+    const identity = getProbeIdentity(messageNode);
+    if (!messageNode || !identity) return;
+    const media = findProbeMediaFromTarget(target, messageNode);
+    if (!media) return;
+
+    const ancestorChain = [];
+    let current = target;
+    for (let depth = 0; current && current !== messageNode && depth < 6; depth += 1) {
+      ancestorChain.push(describeElement(current));
+      current = current.parentElement;
+    }
+    ancestorChain.push(describeElement(messageNode));
+
+    runtime.lastSourceProbe = {
+      capturedAt: Date.now(),
+      identity,
+      albumIndex: getProbeAlbumIndex(messageNode, media),
+      mediaTag: media.tagName.toLowerCase(),
+      messageNode: describeElement(messageNode),
+      targetAncestors: ancestorChain.filter(Boolean),
+    };
+  }
+
+  function findScrollableAncestor(element) {
+    let current = element instanceof Element ? element.parentElement : undefined;
+    while (current && current !== document.body && current !== document.documentElement) {
+      const style = getComputedStyle(current);
+      const canScroll = /(auto|scroll|overlay)/.test(style.overflowY)
+        && current.scrollHeight > current.clientHeight + 2;
+      if (canScroll) return current;
+      current = current.parentElement;
+    }
+    return undefined;
+  }
+
+  function collectProbeMessageNodes() {
+    const selector = PROBE_MESSAGE_ID_ATTRIBUTES.map((name) => `[${name}]`).join(', ');
+    const nodes = [];
+    const seen = new Set();
+    for (const element of document.querySelectorAll(selector)) {
+      const identity = getProbeIdentity(element);
+      if (!identity || seen.has(element)) continue;
+      seen.add(element);
+      nodes.push(element);
+      if (nodes.length >= 600) break;
+    }
+    return nodes;
+  }
+
+  function collectScrollSnapshots(messageNodes) {
+    const snapshots = [];
+    const seen = new Set();
+    for (const messageNode of messageNodes) {
+      if (!isElementVisible(messageNode)) continue;
+      const container = findScrollableAncestor(messageNode);
+      if (!container || seen.has(container)) continue;
+      seen.add(container);
+      snapshots.push({
+        node: container,
+        scrollTop: Math.round(container.scrollTop),
+        scrollHeight: Math.round(container.scrollHeight),
+        clientHeight: Math.round(container.clientHeight),
+      });
+      if (snapshots.length >= 8) break;
+    }
+    return snapshots;
+  }
+
+  function describeScrollSnapshots(snapshots) {
+    return snapshots.map((snapshot, index) => ({
+      index,
+      element: describeElement(snapshot.node),
+      scrollTop: snapshot.scrollTop,
+      scrollHeight: snapshot.scrollHeight,
+      clientHeight: snapshot.clientHeight,
+    }));
+  }
+
+  function collectChatProbe() {
+    const messageNodes = collectProbeMessageNodes();
+    const visibleNodes = messageNodes.filter(isElementVisible);
+    const sample = visibleNodes.slice(0, 12).map((element) => ({
+      identity: getProbeIdentity(element),
+      element: describeElement(element),
+    }));
+    const scrollSnapshots = collectScrollSnapshots(messageNodes);
+    return {
+      messageNodeCount: messageNodes.length,
+      visibleMessageNodeCount: visibleNodes.length,
+      messageNodesWithPeerId: messageNodes.filter((element) => getProbeIdentity(element)?.peerId).length,
+      sample,
+      scrollContainers: describeScrollSnapshots(scrollSnapshots),
+    };
+  }
+
+  function collectMediaAncestors(viewer, media) {
+    const result = [];
+    let current = media;
+    for (let depth = 0; current && depth < 12; depth += 1) {
+      result.push(describeElement(current));
+      if (current === viewer) break;
+      current = current.parentElement;
+    }
+    return result.filter(Boolean);
+  }
+
+  function collectViewerControls(viewer) {
+    if (!(viewer instanceof Element)) return [];
+    const viewerRect = viewer.getBoundingClientRect();
+    const controls = [];
+    for (const element of viewer.querySelectorAll('button, a[href], [role="button"], [tabindex]')) {
+      if (!isElementVisible(element) || element.closest(`#${SCRIPT_ID}`)) continue;
+      const rect = element.getBoundingClientRect();
+      let score = 0;
+      if (rect.top < viewerRect.top + Math.min(180, viewerRect.height * 0.25)) score += 12;
+      if (rect.left < viewerRect.left + 220 || rect.right > viewerRect.right - 220) score += 8;
+      if (element instanceof HTMLAnchorElement) score += 4;
+      const classText = Array.from(element.classList).join(' ').toLocaleLowerCase();
+      if (/(close|back|author|date|message|viewer)/.test(classText)) score += 10;
+      controls.push({ element, score });
+    }
+    controls.sort((left, right) => right.score - left.score);
+    return controls.slice(0, 24).map(({ element, score }, index) => ({
+      index,
+      score,
+      element: describeControl(element),
+    }));
+  }
+
+  function inspectMessageMapping() {
+    const viewer = findMediaViewer();
+    const media = viewer && findActiveMedia(viewer);
+    const result = {
+      client: 'web-k',
+      viewer: describeElement(viewer),
+      activeMedia: describeElement(media),
+      mediaAncestors: viewer && media ? collectMediaAncestors(viewer, media) : [],
+      viewerControls: viewer ? collectViewerControls(viewer) : [],
+      sourceClick: runtime.lastSourceProbe
+        ? { ...runtime.lastSourceProbe, ageMs: Date.now() - runtime.lastSourceProbe.capturedAt }
+        : undefined,
+      chat: collectChatProbe(),
+      privacy: {
+        includesTextContent: false,
+        includesRawHref: false,
+        includesMediaUrl: false,
+        includesChannelName: false,
+        includesUserName: false,
+      },
+    };
+    console.log('[Telegram Media Continuity] Web K 消息映射脱敏探测', result);
+    return result;
+  }
+
+  function clearCloseProbe() {
+    if (runtime.closeProbeTimer) window.clearTimeout(runtime.closeProbeTimer);
+    runtime.closeProbeTimer = 0;
+    for (const cleanup of runtime.closeProbeCleanup.splice(0)) cleanup();
+    runtime.closeProbeInternal = undefined;
+  }
+
+  function compareScrollSnapshots(before, after) {
+    const result = [];
+    for (let index = 0; index < before.length; index += 1) {
+      const beforeSnapshot = before[index];
+      const afterSnapshot = after.find((snapshot) => snapshot.node === beforeSnapshot.node);
+      result.push({
+        index,
+        stillConnected: beforeSnapshot.node.isConnected,
+        beforeScrollTop: beforeSnapshot.scrollTop,
+        afterScrollTop: afterSnapshot ? afterSnapshot.scrollTop : undefined,
+        delta: afterSnapshot ? afterSnapshot.scrollTop - beforeSnapshot.scrollTop : undefined,
+      });
+    }
+    return result;
+  }
+
+  function finalizeCloseProbe(status, viewerClosedAt) {
+    const internal = runtime.closeProbeInternal;
+    if (!internal) return runtime.closeProbe;
+    const messageNodes = collectProbeMessageNodes();
+    const afterScrolls = collectScrollSnapshots(messageNodes);
+    const now = performance.now();
+    runtime.closeProbe = {
+      ...runtime.closeProbe,
+      status,
+      finishedAt: Date.now(),
+      elapsedMs: Math.round(now - internal.startedAt),
+      closeElapsedFromIntentMs: internal.intentAt
+        ? Math.round((viewerClosedAt || now) - internal.intentAt)
+        : undefined,
+      viewerConnectedAfter: internal.viewer.isConnected,
+      viewerVisibleAfter: isElementVisible(internal.viewer),
+      afterChat: {
+        messageNodeCount: messageNodes.length,
+        visibleMessageNodeCount: messageNodes.filter(isElementVisible).length,
+        scrollContainers: describeScrollSnapshots(afterScrolls),
+      },
+      scrollChanges: compareScrollSnapshots(internal.beforeScrolls, afterScrolls),
+    };
+    clearCloseProbe();
+    console.log('[Telegram Media Continuity] Web K 关闭流程脱敏探测', runtime.closeProbe);
+    return runtime.closeProbe;
+  }
+
+  function armCloseFlowProbe() {
+    clearCloseProbe();
+    const viewer = findMediaViewer();
+    if (!viewer) {
+      runtime.closeProbe = {
+        status: 'no-visible-viewer',
+        armedAt: Date.now(),
+      };
+      console.warn('[Telegram Media Continuity] 未发现可见媒体查看器');
+      return runtime.closeProbe;
+    }
+
+    const messageNodes = collectProbeMessageNodes();
+    const beforeScrolls = collectScrollSnapshots(messageNodes);
+    const startedAt = performance.now();
+    runtime.closeProbe = {
+      status: 'armed',
+      armedAt: Date.now(),
+      viewer: describeElement(viewer),
+      candidateControls: collectViewerControls(viewer),
+      beforeChat: {
+        messageNodeCount: messageNodes.length,
+        visibleMessageNodeCount: messageNodes.filter(isElementVisible).length,
+        scrollContainers: describeScrollSnapshots(beforeScrolls),
+      },
+      intent: undefined,
+    };
+    runtime.closeProbeInternal = {
+      viewer,
+      startedAt,
+      intentAt: 0,
+      beforeScrolls,
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape' || !runtime.closeProbeInternal) return;
+      runtime.closeProbeInternal.intentAt = performance.now();
+      runtime.closeProbe.intent = {
+        type: 'escape',
+        elapsedMs: Math.round(runtime.closeProbeInternal.intentAt - startedAt),
+        repeat: Boolean(event.repeat),
+      };
+    };
+    const handlePointerDown = (event) => {
+      if (!runtime.closeProbeInternal || !(event.target instanceof Element)) return;
+      if (!viewer.contains(event.target)) return;
+      runtime.closeProbeInternal.intentAt = performance.now();
+      runtime.closeProbe.intent = {
+        type: 'viewer-pointer',
+        elapsedMs: Math.round(runtime.closeProbeInternal.intentAt - startedAt),
+        target: describeControl(event.target.closest('button, a[href], [role="button"], [tabindex]') || event.target),
+      };
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    window.addEventListener('pointerdown', handlePointerDown, true);
+    runtime.closeProbeCleanup.push(
+      () => window.removeEventListener('keydown', handleKeyDown, true),
+      () => window.removeEventListener('pointerdown', handlePointerDown, true),
+    );
+
+    const poll = () => {
+      const internal = runtime.closeProbeInternal;
+      if (!internal) return;
+      const elapsed = performance.now() - internal.startedAt;
+      if (!internal.viewer.isConnected) {
+        const closedAt = performance.now();
+        requestAnimationFrame(() => requestAnimationFrame(() => finalizeCloseProbe('viewer-removed', closedAt)));
+        return;
+      }
+      if (!isElementVisible(internal.viewer)) {
+        const closedAt = performance.now();
+        requestAnimationFrame(() => requestAnimationFrame(() => finalizeCloseProbe('viewer-hidden', closedAt)));
+        return;
+      }
+      if (elapsed >= CLOSE_PROBE_TIMEOUT_MS) {
+        finalizeCloseProbe('timeout');
+        return;
+      }
+      runtime.closeProbeTimer = window.setTimeout(poll, CLOSE_PROBE_POLL_MS);
+    };
+    runtime.closeProbeTimer = window.setTimeout(poll, CLOSE_PROBE_POLL_MS);
+    console.info('[Telegram Media Continuity] 关闭流程探测已布防，请手动点击官方关闭按钮或按 Esc');
+    return runtime.closeProbe;
   }
 
   function validateSettings(value) {
@@ -690,9 +1117,21 @@
           navigation: viewer ? navigationAvailability(viewer) : { previous: false, next: false },
           isZoomed: Boolean(viewer && isMediaZoomed(viewer)),
           hostMounted: Boolean(document.getElementById(SCRIPT_ID)),
+          sourceProbeCaptured: Boolean(runtime.lastSourceProbe),
+          closeProbeStatus: runtime.closeProbe?.status || 'idle',
         };
         console.log('[Telegram Media Continuity] Web K DOM 探测结果', result);
         return result;
+      },
+      inspectMessageMapping,
+      armCloseFlowProbe,
+      getCloseFlowProbe() {
+        return runtime.closeProbe;
+      },
+      cancelCloseFlowProbe() {
+        clearCloseProbe();
+        runtime.closeProbe = { status: 'cancelled', finishedAt: Date.now() };
+        return runtime.closeProbe;
       },
       enableDebug(enabled = true) {
         runtime.debugEnabled = Boolean(enabled);
@@ -712,11 +1151,13 @@
       getSummary() {
         const viewer = findMediaViewer();
         return {
-          version: '0.3.0-k3',
+          version: '0.3.1-k4',
           client: 'web-k',
           settings: loadSettings(),
           viewerDetected: Boolean(viewer),
           navigation: viewer ? navigationAvailability(viewer) : { previous: false, next: false },
+          sourceProbeCaptured: Boolean(runtime.lastSourceProbe),
+          closeProbeStatus: runtime.closeProbe?.status || 'idle',
         };
       },
     });
@@ -736,6 +1177,7 @@
     runtime.debugEnabled = /(?:[?#&])ttMediaDebug=1(?:&|$)/.test(location.href);
     installDebugApi();
 
+    document.addEventListener('pointerdown', captureSourceProbe, true);
     runtime.observer = new MutationObserver(scheduleScan);
     runtime.observer.observe(document.body || document.documentElement, {
       childList: true,
@@ -746,7 +1188,11 @@
       else scheduleScan();
     }, 1000);
 
-    window.addEventListener('pagehide', () => runtime.session?.destroy());
+    window.addEventListener('pagehide', () => {
+      clearCloseProbe();
+      document.removeEventListener('pointerdown', captureSourceProbe, true);
+      runtime.session?.destroy();
+    });
     window.addEventListener('popstate', scheduleScan);
     window.addEventListener('hashchange', scheduleScan);
     scheduleScan();
