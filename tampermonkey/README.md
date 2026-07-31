@@ -217,3 +217,83 @@ TelegramMediaContinuity.resetStorage();
 ```js
 TelegramMediaContinuity.resetStorage();
 ```
+
+# Telegram Web K 媒体续播兼容脚本
+
+脚本路径：
+
+```text
+tampermonkey/telegram-media-continuity-web-k.user.js
+```
+
+适用页面：
+
+```text
+https://web.telegram.org/k/*
+```
+
+当前探测版本：
+
+```text
+0.3.1-k4
+```
+
+## 当前状态
+
+Web K 已完成并真实验收图片计时、连续切换、视频 `ended`、缩放暂停、手动导航和队列末尾功能。
+
+“关闭媒体查看器后定位最后浏览消息”仍处于 Draft PR #7 的 DOM 探测阶段。`0.3.1-k4` 只增加只读脱敏探测，不会自动定位、滚动或点击消息，也不会自动调用候选官方跳转控件。
+
+## 关闭定位脱敏探测
+
+安装或更新开发分支脚本后，刷新 Telegram Web K。从聊天消息中点击打开一张媒体，然后在控制台执行：
+
+```js
+copy(JSON.stringify(TelegramMediaContinuity.inspectMessageMapping(), null, 2));
+```
+
+该命令用于确认：
+
+- 来源消息是否公开提供数字 `messageId` 和 `peerId`；
+- 活动媒体祖先节点有哪些类名和 `data-*` 属性名；
+- 当前页面有多少可见消息节点和滚动容器；
+- 查看器中有哪些候选关闭、作者、日期或消息跳转控件。
+
+探测结果不会输出聊天正文、频道名、用户名、原始链接或媒体 URL。
+
+### 官方关闭按钮时序
+
+保持查看器打开，执行：
+
+```js
+TelegramMediaContinuity.armCloseFlowProbe();
+```
+
+随后手动点击 Telegram 官方关闭按钮。查看器关闭后执行：
+
+```js
+copy(JSON.stringify(TelegramMediaContinuity.getCloseFlowProbe(), null, 2));
+```
+
+### Esc 关闭时序
+
+重新打开一张媒体，再次执行：
+
+```js
+TelegramMediaContinuity.armCloseFlowProbe();
+```
+
+手动按 `Esc` 关闭，然后执行：
+
+```js
+copy(JSON.stringify(TelegramMediaContinuity.getCloseFlowProbe(), null, 2));
+```
+
+关闭流程探测最多等待 6 秒，只观察查看器移除或隐藏时序和聊天滚动变化，不阻止 Telegram 官方事件，不执行自动点击。
+
+## Web K 当前边界
+
+- 在真实页面确认消息身份、关闭按钮和官方消息跳转行为前，不启用自动定位；
+- 目标消息不在虚拟列表 DOM 时，不通过猜测滚动、无限加载或私有接口寻找；
+- 所有探测状态只保存在当前页面内，不写入新的位置历史；
+- 出现异常时停用 Web K 脚本即可恢复 Telegram 原始行为。
