@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web K 媒体续播（兼容验证版）
 // @namespace    telegram-air/media-continuity
-// @version      0.3.0-k1
+// @version      0.3.0-k2
 // @description  为 Telegram Web K 提供图片和视频连续浏览能力
 // @match        https://web.telegram.org/k/*
 // @run-at       document-idle
@@ -129,7 +129,7 @@
   }
 
   function findMediaRoot(viewer) {
-    return viewer.querySelector('.media-viewer-media') || viewer;
+    return viewer.querySelector('.media-viewer-movers') || viewer;
   }
 
   function getNavigationButton(viewer, direction) {
@@ -719,7 +719,7 @@
       getSummary() {
         const viewer = findMediaViewer();
         return {
-          version: '0.3.0-k1',
+          version: '0.3.0-k2',
           client: 'web-k',
           settings: loadSettings(),
           viewerDetected: Boolean(viewer),
