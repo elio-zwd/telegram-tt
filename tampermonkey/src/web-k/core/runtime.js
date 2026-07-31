@@ -1,0 +1,17 @@
+export const runtime = {
+  session: undefined,
+  observer: undefined,
+  scanTimer: 0,
+  periodicTimer: 0,
+  debugEnabled: false,
+  lastSourceProbe: undefined,
+  closeProbe: undefined,
+  closeProbeInternal: undefined,
+  closeProbeTimer: 0,
+  closeProbeCleanup: [],
+  lastSourceTarget: undefined,
+  closeSequenceId: 0,
+  activeLocationSequenceId: 0,
+  locationTimers: new Set(),
+  lastLocationResult: undefined,
+};
