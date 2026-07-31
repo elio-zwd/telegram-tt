@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web K 媒体续播（兼容验证版）
 // @namespace    telegram-air/media-continuity
-// @version      0.3.0-k3
+// @version      0.4.0-k5
 // @description  为 Telegram Web K 提供图片和视频连续浏览能力
 // @match        https://web.telegram.org/k/*
 // @run-at       document-idle
@@ -16,6 +16,30 @@
   const SCAN_DELAY_MS = 160;
   const NAVIGATION_TIMEOUT_MS = 3000;
   const INTERACTION_COOLDOWN_MS = 900;
+  const CLOSE_PROBE_TIMEOUT_MS = 6000;
+  const CLOSE_PROBE_POLL_MS = 50;
+  const SOURCE_TARGET_MAX_AGE_MS = 5000;
+  const LOCATION_WAIT_TIMEOUT_MS = 2400;
+  const LOCATION_POLL_MS = 80;
+  const LOCATION_REVIEW_DELAY_MS = 420;
+  const LOCATION_HIGHLIGHT_MS = 1200;
+  const CHAT_SCROLL_SELECTOR = '.scrollable.scrollable-y.bubbles-scrollable';
+  const LOCATION_STYLE_ID = 'telegram-media-continuity-location-style';
+  const LOCATION_HIGHLIGHT_CLASS = 'tt-media-continuity-location-highlight';
+  const LOCATION_NOTICE_ID = 'telegram-media-continuity-location-notice';
+  const PROBE_MESSAGE_ID_ATTRIBUTES = Object.freeze([
+    'data-mid',
+    'data-message-id',
+    'data-msg-id',
+    'data-message',
+  ]);
+  const PROBE_PEER_ID_ATTRIBUTES = Object.freeze(['data-peer-id', 'data-peer']);
+  const PROBE_NUMERIC_ATTRIBUTES = Object.freeze([
+    ...PROBE_MESSAGE_ID_ATTRIBUTES,
+    ...PROBE_PEER_ID_ATTRIBUTES,
+    'data-index',
+    'data-media-index',
+  ]);
   const DURATIONS = [2000, 3000, 5000, 8000, 10000, 15000, 30000];
   const DEFAULT_SETTINGS = Object.freeze({
     continuousEnabled: false,
@@ -29,6 +53,16 @@
     scanTimer: 0,
     periodicTimer: 0,
     debugEnabled: false,
+    lastSourceProbe: undefined,
+    closeProbe: undefined,
+    closeProbeInternal: undefined,
+    closeProbeTimer: 0,
+    closeProbeCleanup: [],
+    lastSourceTarget: undefined,
+    closeSequenceId: 0,
+    activeLocationSequenceId: 0,
+    locationTimers: new Set(),
+    lastLocationResult: undefined,
   };
 
   const mediaNodeIds = new WeakMap();
@@ -56,6 +90,16 @@
       && !element.hasAttribute('hidden');
   }
 
+  function getNumericDataAttributes(element) {
+    if (!(element instanceof Element)) return {};
+    const result = {};
+    for (const attributeName of PROBE_NUMERIC_ATTRIBUTES) {
+      const value = element.getAttribute(attributeName);
+      if (value && /^-?\d+$/.test(value)) result[attributeName] = value;
+    }
+    return result;
+  }
+
   function describeElement(element) {
     if (!(element instanceof Element)) return undefined;
     const rect = element.getBoundingClientRect();
@@ -63,7 +107,14 @@
       tag: element.tagName.toLowerCase(),
       classNames: Array.from(element.classList).slice(0, 12),
       role: element.getAttribute('role') || '',
-      ariaLabel: element.getAttribute('aria-label') || '',
+      hasAriaLabel: element.hasAttribute('aria-label'),
+      hasTitle: element.hasAttribute('title'),
+      hasHref: element instanceof HTMLAnchorElement && element.hasAttribute('href'),
+      dataAttributeNames: Array.from(element.attributes)
+        .filter((attribute) => attribute.name.startsWith('data-'))
+        .slice(0, 16)
+        .map((attribute) => attribute.name),
+      numericDataAttributes: getNumericDataAttributes(element),
       rect: {
         width: Math.round(rect.width),
         height: Math.round(rect.height),
@@ -72,7 +123,748 @@
       },
       imageCount: element.querySelectorAll('img').length,
       videoCount: element.querySelectorAll('video').length,
+      buttonCount: element.querySelectorAll('button, [role="button"]').length,
     };
+  }
+
+  function classifyUrlToken(value) {
+    if (!value) return 'empty';
+    if (/^-?\d+$/.test(value)) return 'number';
+    return 'text';
+  }
+
+  function describeHrefPattern(element) {
+    if (!(element instanceof HTMLAnchorElement) || !element.hasAttribute('href')) return undefined;
+    try {
+      const url = new URL(element.href, location.href);
+      const hashPath = url.hash.split('?')[0].replace(/^#/, '');
+      return {
+        protocol: url.protocol,
+        host: ['web.telegram.org', 't.me', 'telegram.me'].includes(url.hostname)
+          ? url.hostname
+          : 'other',
+        pathPattern: url.pathname.split('/').filter(Boolean).slice(0, 8).map(classifyUrlToken),
+        hashPattern: hashPath.split('/').filter(Boolean).slice(0, 8).map(classifyUrlToken),
+        queryKeys: Array.from(url.searchParams.keys()).slice(0, 12),
+        hashQueryKeys: url.hash.includes('?')
+          ? Array.from(new URLSearchParams(url.hash.slice(url.hash.indexOf('?') + 1)).keys()).slice(0, 12)
+          : [],
+      };
+    } catch (error) {
+      return { invalid: true };
+    }
+  }
+
+  function describeControl(element) {
+    const description = describeElement(element);
+    if (!description) return undefined;
+    return {
+      ...description,
+      hasSvg: Boolean(element.querySelector('svg')),
+      hrefPattern: describeHrefPattern(element),
+    };
+  }
+
+  function findProbeMessageNode(target) {
+    let current = target instanceof Element ? target : undefined;
+    for (let depth = 0; current && depth < 14; depth += 1) {
+      const hasMessageId = PROBE_MESSAGE_ID_ATTRIBUTES.some((attributeName) => {
+        const value = current.getAttribute(attributeName);
+        return Boolean(value && /^-?\d+$/.test(value));
+      });
+      if (hasMessageId) return current;
+      current = current.parentElement;
+    }
+    return undefined;
+  }
+
+  function getProbeIdentity(messageNode) {
+    if (!(messageNode instanceof Element)) return undefined;
+    let messageId = '';
+    let peerId = '';
+    for (const attributeName of PROBE_MESSAGE_ID_ATTRIBUTES) {
+      const value = messageNode.getAttribute(attributeName);
+      if (value && /^-?\d+$/.test(value)) {
+        messageId = value;
+        break;
+      }
+    }
+    for (const attributeName of PROBE_PEER_ID_ATTRIBUTES) {
+      const value = messageNode.getAttribute(attributeName);
+      if (value && /^-?\d+$/.test(value)) {
+        peerId = value;
+        break;
+      }
+    }
+    return messageId ? { messageId, peerId } : undefined;
+  }
+
+  function findProbeMediaFromTarget(target, messageNode, point) {
+    if (!(target instanceof Element) || !(messageNode instanceof Element)) return undefined;
+    if (target.matches('img, video')) return target;
+
+    let current = target;
+    while (current && current !== messageNode) {
+      const media = current.querySelectorAll('img, video');
+      if (media.length === 1) return media[0];
+      current = current.parentElement;
+    }
+
+    const candidates = Array.from(messageNode.querySelectorAll('img, video'))
+      .filter((item) => {
+        const rect = item.getBoundingClientRect();
+        return rect.width >= 32 && rect.height >= 32;
+      });
+    if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+      const hit = candidates.find((item) => {
+        const rect = item.getBoundingClientRect();
+        return point.x >= rect.left && point.x <= rect.right
+          && point.y >= rect.top && point.y <= rect.bottom;
+      });
+      if (hit) return hit;
+    }
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }
+
+  function getProbeAlbumIndex(messageNode, media) {
+    if (!(messageNode instanceof Element) || !(media instanceof Element)) return 0;
+    const mediaItems = Array.from(messageNode.querySelectorAll('img, video'))
+      .filter((item) => {
+        const rect = item.getBoundingClientRect();
+        return rect.width >= 32 && rect.height >= 32;
+      });
+    const index = mediaItems.indexOf(media);
+    return index >= 0 ? index : 0;
+  }
+
+  function captureSourceProbe(event) {
+    const target = event.target;
+    if (!(target instanceof Element) || target.closest(`#${SCRIPT_ID}`) || findMediaViewer()) return;
+    clearLocationTimers();
+    runtime.activeLocationSequenceId += 1;
+    const messageNode = findProbeMessageNode(target);
+    const identity = getProbeIdentity(messageNode);
+    if (!messageNode || !identity) return;
+    const media = findProbeMediaFromTarget(target, messageNode, { x: event.clientX, y: event.clientY });
+    if (!media) return;
+
+    const ancestorChain = [];
+    let current = target;
+    for (let depth = 0; current && current !== messageNode && depth < 6; depth += 1) {
+      ancestorChain.push(describeElement(current));
+      current = current.parentElement;
+    }
+    ancestorChain.push(describeElement(messageNode));
+
+    const capturedAt = Date.now();
+    const albumIndex = getProbeAlbumIndex(messageNode, media);
+    runtime.lastSourceProbe = {
+      capturedAt,
+      identity,
+      albumIndex,
+      mediaTag: media.tagName.toLowerCase(),
+      messageNode: describeElement(messageNode),
+      targetAncestors: ancestorChain.filter(Boolean),
+    };
+    runtime.lastSourceTarget = identity.peerId
+      ? {
+        capturedAt,
+        peerKey: identity.peerId,
+        messageKey: identity.messageId,
+        albumIndex,
+        source: 'source-message',
+        confidence: 'high',
+        sourceMessageNode: messageNode,
+      }
+      : undefined;
+  }
+
+  function findScrollableAncestor(element) {
+    let current = element instanceof Element ? element.parentElement : undefined;
+    while (current && current !== document.body && current !== document.documentElement) {
+      const style = getComputedStyle(current);
+      const canScroll = /(auto|scroll|overlay)/.test(style.overflowY)
+        && current.scrollHeight > current.clientHeight + 2;
+      if (canScroll) return current;
+      current = current.parentElement;
+    }
+    return undefined;
+  }
+
+
+  function cloneMediaTarget(target) {
+    if (!target) return undefined;
+    return {
+      capturedAt: target.capturedAt || Date.now(),
+      peerKey: String(target.peerKey || ''),
+      messageKey: String(target.messageKey || ''),
+      albumIndex: Number.isInteger(target.albumIndex) ? target.albumIndex : 0,
+      source: target.source || 'source-message',
+      confidence: target.confidence || 'high',
+      confirmedAt: target.confirmedAt || 0,
+      mediaFingerprint: target.mediaFingerprint || '',
+      sourceMessageNode: target.sourceMessageNode,
+    };
+  }
+
+  function takeRecentSourceTarget() {
+    const target = runtime.lastSourceTarget;
+    runtime.lastSourceTarget = undefined;
+    if (!target || Date.now() - target.capturedAt > SOURCE_TARGET_MAX_AGE_MS) return undefined;
+    if (!(target.sourceMessageNode instanceof Element) || !target.sourceMessageNode.isConnected) return undefined;
+    const identity = getProbeIdentity(target.sourceMessageNode);
+    if (!identity || identity.messageId !== target.messageKey || identity.peerId !== target.peerKey) return undefined;
+    return cloneMediaTarget(target);
+  }
+
+  function isChatMediaNode(node) {
+    if (!(node instanceof Element) || node.classList.contains('pinned-message')) return false;
+    const identity = getProbeIdentity(node);
+    if (!identity?.peerId || !node.closest(CHAT_SCROLL_SELECTOR)) return false;
+    if (node.classList.contains('album-item')) return true;
+    if (!node.classList.contains('bubble')) return false;
+    if (node.querySelector(':scope .album-item[data-mid][data-peer-id]')) return false;
+    return node.classList.contains('photo')
+      || node.classList.contains('video')
+      || node.classList.contains('is-gif')
+      || node.classList.contains('document');
+  }
+
+  function getAlbumItemIndex(node) {
+    if (!(node instanceof Element) || !node.classList.contains('album-item')) return 0;
+    const parent = node.parentElement;
+    if (!parent) return 0;
+    const items = Array.from(parent.children).filter((item) => item.classList?.contains('album-item'));
+    const index = items.indexOf(node);
+    return index >= 0 ? index : 0;
+  }
+
+  function createTargetFromMessageNode(node) {
+    const identity = getProbeIdentity(node);
+    if (!identity?.messageId || !identity.peerId) return undefined;
+    return {
+      capturedAt: Date.now(),
+      peerKey: identity.peerId,
+      messageKey: identity.messageId,
+      albumIndex: getAlbumItemIndex(node),
+      source: 'source-message',
+      confidence: 'high',
+      confirmedAt: 0,
+      mediaFingerprint: '',
+      sourceMessageNode: node,
+    };
+  }
+
+  function collectOrderedChatMediaTargets(peerKey) {
+    const container = findActiveChatScrollContainer();
+    if (!container || !peerKey) return [];
+    const nodes = Array.from(container.querySelectorAll('[data-mid][data-peer-id]'))
+      .filter((node) => isChatMediaNode(node) && getProbeIdentity(node)?.peerId === peerKey);
+    nodes.sort((left, right) => {
+      if (left === right) return 0;
+      const position = left.compareDocumentPosition(right);
+      return position & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
+    return nodes.map(createTargetFromMessageNode).filter(Boolean);
+  }
+
+  function findTargetIndex(targets, target) {
+    if (!target) return -1;
+    const nodeIndex = targets.findIndex((candidate) => candidate.sourceMessageNode === target.sourceMessageNode);
+    if (nodeIndex >= 0) return nodeIndex;
+    return targets.findIndex((candidate) => candidate.peerKey === target.peerKey
+      && candidate.messageKey === target.messageKey);
+  }
+
+  function findAdjacentMediaTarget(target, direction) {
+    if (!target || !direction) return undefined;
+    const targets = collectOrderedChatMediaTargets(target.peerKey);
+    const index = findTargetIndex(targets, target);
+    if (index < 0) return undefined;
+    return cloneMediaTarget(targets[index + (direction > 0 ? 1 : -1)]);
+  }
+
+  function isMediaSuccessfullyDisplayed(media) {
+    if (!isElementVisible(media)) return false;
+    if (media instanceof HTMLImageElement) {
+      return media.complete && media.naturalWidth > 0;
+    }
+    if (media instanceof HTMLVideoElement) {
+      return media.readyState >= HTMLMediaElement.HAVE_METADATA
+        || media.videoWidth > 0
+        || media.videoHeight > 0;
+    }
+    return false;
+  }
+
+  function findActiveChatScrollContainer() {
+    const candidates = Array.from(document.querySelectorAll(CHAT_SCROLL_SELECTOR)).filter(isElementVisible);
+    candidates.sort((left, right) => {
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      return rightRect.width * rightRect.height - leftRect.width * leftRect.height;
+    });
+    return candidates[0];
+  }
+
+  function getActiveChatPeerKey(container) {
+    if (!(container instanceof Element)) return '';
+    const counts = new Map();
+    for (const node of container.querySelectorAll('[data-mid][data-peer-id]')) {
+      const identity = getProbeIdentity(node);
+      if (!identity?.peerId || node.classList.contains('pinned-message')) continue;
+      counts.set(identity.peerId, (counts.get(identity.peerId) || 0) + 1);
+    }
+    let bestKey = '';
+    let bestCount = 0;
+    for (const [peerKey, count] of counts) {
+      if (count > bestCount) {
+        bestKey = peerKey;
+        bestCount = count;
+      }
+    }
+    return bestKey;
+  }
+
+  function findExactMessageNode(target) {
+    const container = findActiveChatScrollContainer();
+    if (!container || !target?.messageKey) return { reason: 'chat-not-ready' };
+    const activePeerKey = getActiveChatPeerKey(container);
+    if (target.peerKey && activePeerKey && target.peerKey !== activePeerKey) {
+      return { reason: 'peer-changed', container };
+    }
+
+    const sourceNode = target.sourceMessageNode;
+    if (sourceNode instanceof Element && sourceNode.isConnected && container.contains(sourceNode)) {
+      const identity = getProbeIdentity(sourceNode);
+      if (identity?.messageId === target.messageKey
+        && (!target.peerKey || identity.peerId === target.peerKey)) {
+        return {
+          node: sourceNode.classList.contains('album-item')
+            ? sourceNode.closest('.bubble') || sourceNode
+            : sourceNode,
+          container,
+          reason: 'source-node',
+        };
+      }
+    }
+
+    const escapedMessageKey = globalThis.CSS?.escape
+      ? CSS.escape(target.messageKey)
+      : target.messageKey.replace(/[^-\d]/g, '');
+    const matches = Array.from(container.querySelectorAll(`[data-mid="${escapedMessageKey}"]`))
+      .filter((node) => {
+        const identity = getProbeIdentity(node);
+        return identity?.messageId === target.messageKey
+          && (!target.peerKey || identity.peerId === target.peerKey)
+          && !node.classList.contains('pinned-message');
+      });
+    const identityNode = matches.find((node) => node.classList.contains('album-item'))
+      || matches.find((node) => node.classList.contains('bubble'))
+      || matches[0];
+    const displayNode = identityNode?.classList.contains('album-item')
+      ? identityNode.closest('.bubble') || identityNode
+      : identityNode;
+    return displayNode
+      ? { node: displayNode, container, reason: 'exact-dom-match' }
+      : { container, reason: 'not-loaded' };
+  }
+
+  function ensureLocationStyle() {
+    if (document.getElementById(LOCATION_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = LOCATION_STYLE_ID;
+    style.textContent = `
+      @keyframes ttMediaContinuityPulse {
+        0% { box-shadow: 0 0 0 0 rgba(42, 171, 238, .7); }
+        45% { box-shadow: 0 0 0 8px rgba(42, 171, 238, .18); }
+        100% { box-shadow: 0 0 0 0 rgba(42, 171, 238, 0); }
+      }
+      .${LOCATION_HIGHLIGHT_CLASS} {
+        animation: ttMediaContinuityPulse ${LOCATION_HIGHLIGHT_MS}ms ease-out !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function showLocationNotice(message) {
+    document.getElementById(LOCATION_NOTICE_ID)?.remove();
+    const notice = document.createElement('div');
+    notice.id = LOCATION_NOTICE_ID;
+    notice.setAttribute('role', 'status');
+    notice.textContent = message;
+    notice.style.cssText = [
+      'position:fixed',
+      'left:50%',
+      'bottom:24px',
+      'transform:translateX(-50%)',
+      'z-index:2147483647',
+      'max-width:min(86vw,420px)',
+      'padding:9px 14px',
+      'border-radius:11px',
+      'background:rgba(20,24,32,.92)',
+      'color:#fff',
+      'font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+      'box-shadow:0 8px 28px rgba(0,0,0,.28)',
+      'pointer-events:none',
+    ].join(';');
+    document.body.appendChild(notice);
+    window.setTimeout(() => notice.remove(), 1800);
+  }
+
+  function clearLocationTimers() {
+    for (const timerId of runtime.locationTimers) window.clearTimeout(timerId);
+    runtime.locationTimers.clear();
+    for (const node of document.querySelectorAll(`.${LOCATION_HIGHLIGHT_CLASS}`)) {
+      node.classList.remove(LOCATION_HIGHLIGHT_CLASS);
+    }
+  }
+
+  function setLocationTimer(callback, delay) {
+    const timerId = window.setTimeout(() => {
+      runtime.locationTimers.delete(timerId);
+      callback();
+    }, delay);
+    runtime.locationTimers.add(timerId);
+    return timerId;
+  }
+
+  function recordLocationResult(sequenceId, status, target, extra = {}) {
+    runtime.lastLocationResult = {
+      sequenceId,
+      status,
+      finishedAt: Date.now(),
+      target: target
+        ? {
+          peerKey: target.peerKey,
+          messageKey: target.messageKey,
+          albumIndex: target.albumIndex,
+          confidence: target.confidence,
+        }
+        : undefined,
+      ...extra,
+    };
+    debugLog('关闭后定位结果', runtime.lastLocationResult);
+  }
+
+  function centerAndHighlightMessage(node, container, sequenceId, target) {
+    ensureLocationStyle();
+    node.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+    node.classList.remove(LOCATION_HIGHLIGHT_CLASS);
+    void node.offsetWidth;
+    node.classList.add(LOCATION_HIGHLIGHT_CLASS);
+    setLocationTimer(() => node.classList.remove(LOCATION_HIGHLIGHT_CLASS), LOCATION_HIGHLIGHT_MS);
+    setLocationTimer(() => {
+      if (runtime.activeLocationSequenceId !== sequenceId || !node.isConnected || !container.isConnected) return;
+      const nodeRect = node.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const delta = (nodeRect.top + nodeRect.height / 2) - (containerRect.top + containerRect.height / 2);
+      if (Math.abs(delta) > Math.min(120, containerRect.height * 0.18)) {
+        container.scrollTop += delta;
+      }
+    }, LOCATION_REVIEW_DELAY_MS);
+    recordLocationResult(sequenceId, 'located', target, { source: 'exact-dom-match' });
+    showLocationNotice('已定位到最后查看消息');
+  }
+
+  function locateMessageAfterClose(snapshot) {
+    if (!snapshot) return;
+    clearLocationTimers();
+    runtime.activeLocationSequenceId = snapshot.sequenceId;
+    const startedAt = performance.now();
+
+    if (!snapshot.target) {
+      recordLocationResult(snapshot.sequenceId, snapshot.reason || 'no-confirmed-target');
+      showLocationNotice(snapshot.reason === 'unmapped-current-media'
+        ? '无法确认媒体所属消息，已正常关闭'
+        : '最后查看消息当前未加载');
+      return;
+    }
+
+    const poll = () => {
+      if (runtime.activeLocationSequenceId !== snapshot.sequenceId) return;
+      if (findMediaViewer()) {
+        if (performance.now() - startedAt >= LOCATION_WAIT_TIMEOUT_MS) {
+          recordLocationResult(snapshot.sequenceId, 'viewer-still-visible', snapshot.target);
+          return;
+        }
+        setLocationTimer(poll, LOCATION_POLL_MS);
+        return;
+      }
+
+      const match = findExactMessageNode(snapshot.target);
+      if (match.node && match.container) {
+        centerAndHighlightMessage(match.node, match.container, snapshot.sequenceId, snapshot.target);
+        return;
+      }
+      if (match.reason === 'peer-changed') {
+        recordLocationResult(snapshot.sequenceId, 'cancelled-peer-changed', snapshot.target);
+        return;
+      }
+      if (performance.now() - startedAt >= LOCATION_WAIT_TIMEOUT_MS) {
+        recordLocationResult(snapshot.sequenceId, 'target-not-loaded', snapshot.target);
+        showLocationNotice('最后查看消息当前未加载');
+        return;
+      }
+      setLocationTimer(poll, LOCATION_POLL_MS);
+    };
+
+    requestAnimationFrame(() => requestAnimationFrame(poll));
+  }
+
+  function collectProbeMessageNodes() {
+    const selector = PROBE_MESSAGE_ID_ATTRIBUTES.map((name) => `[${name}]`).join(', ');
+    const nodes = [];
+    const seen = new Set();
+    for (const element of document.querySelectorAll(selector)) {
+      const identity = getProbeIdentity(element);
+      if (!identity || seen.has(element)) continue;
+      seen.add(element);
+      nodes.push(element);
+      if (nodes.length >= 600) break;
+    }
+    return nodes;
+  }
+
+  function collectScrollSnapshots(messageNodes) {
+    const snapshots = [];
+    const seen = new Set();
+    for (const messageNode of messageNodes) {
+      if (!isElementVisible(messageNode)) continue;
+      const container = findScrollableAncestor(messageNode);
+      if (!container || seen.has(container)) continue;
+      seen.add(container);
+      snapshots.push({
+        node: container,
+        scrollTop: Math.round(container.scrollTop),
+        scrollHeight: Math.round(container.scrollHeight),
+        clientHeight: Math.round(container.clientHeight),
+      });
+      if (snapshots.length >= 8) break;
+    }
+    return snapshots;
+  }
+
+  function describeScrollSnapshots(snapshots) {
+    return snapshots.map((snapshot, index) => ({
+      index,
+      element: describeElement(snapshot.node),
+      scrollTop: snapshot.scrollTop,
+      scrollHeight: snapshot.scrollHeight,
+      clientHeight: snapshot.clientHeight,
+    }));
+  }
+
+  function collectChatProbe() {
+    const messageNodes = collectProbeMessageNodes();
+    const visibleNodes = messageNodes.filter(isElementVisible);
+    const sample = visibleNodes.slice(0, 12).map((element) => ({
+      identity: getProbeIdentity(element),
+      element: describeElement(element),
+    }));
+    const scrollSnapshots = collectScrollSnapshots(messageNodes);
+    return {
+      messageNodeCount: messageNodes.length,
+      visibleMessageNodeCount: visibleNodes.length,
+      messageNodesWithPeerId: messageNodes.filter((element) => getProbeIdentity(element)?.peerId).length,
+      sample,
+      scrollContainers: describeScrollSnapshots(scrollSnapshots),
+    };
+  }
+
+  function collectMediaAncestors(viewer, media) {
+    const result = [];
+    let current = media;
+    for (let depth = 0; current && depth < 12; depth += 1) {
+      result.push(describeElement(current));
+      if (current === viewer) break;
+      current = current.parentElement;
+    }
+    return result.filter(Boolean);
+  }
+
+  function collectViewerControls(viewer) {
+    if (!(viewer instanceof Element)) return [];
+    const viewerRect = viewer.getBoundingClientRect();
+    const controls = [];
+    for (const element of viewer.querySelectorAll('button, a[href], [role="button"], [tabindex]')) {
+      if (!isElementVisible(element) || element.closest(`#${SCRIPT_ID}`)) continue;
+      const rect = element.getBoundingClientRect();
+      let score = 0;
+      if (rect.top < viewerRect.top + Math.min(180, viewerRect.height * 0.25)) score += 12;
+      if (rect.left < viewerRect.left + 220 || rect.right > viewerRect.right - 220) score += 8;
+      if (element instanceof HTMLAnchorElement) score += 4;
+      const classText = Array.from(element.classList).join(' ').toLocaleLowerCase();
+      if (/(close|back|author|date|message|viewer)/.test(classText)) score += 10;
+      controls.push({ element, score });
+    }
+    controls.sort((left, right) => right.score - left.score);
+    return controls.slice(0, 24).map(({ element, score }, index) => ({
+      index,
+      score,
+      element: describeControl(element),
+    }));
+  }
+
+  function inspectMessageMapping() {
+    const viewer = findMediaViewer();
+    const media = viewer && findActiveMedia(viewer);
+    const result = {
+      client: 'web-k',
+      viewer: describeElement(viewer),
+      activeMedia: describeElement(media),
+      mediaAncestors: viewer && media ? collectMediaAncestors(viewer, media) : [],
+      viewerControls: viewer ? collectViewerControls(viewer) : [],
+      sourceClick: runtime.lastSourceProbe
+        ? { ...runtime.lastSourceProbe, ageMs: Date.now() - runtime.lastSourceProbe.capturedAt }
+        : undefined,
+      chat: collectChatProbe(),
+      privacy: {
+        includesTextContent: false,
+        includesRawHref: false,
+        includesMediaUrl: false,
+        includesChannelName: false,
+        includesUserName: false,
+      },
+    };
+    console.log('[Telegram Media Continuity] Web K 消息映射脱敏探测', result);
+    return result;
+  }
+
+  function clearCloseProbe() {
+    if (runtime.closeProbeTimer) window.clearTimeout(runtime.closeProbeTimer);
+    runtime.closeProbeTimer = 0;
+    for (const cleanup of runtime.closeProbeCleanup.splice(0)) cleanup();
+    runtime.closeProbeInternal = undefined;
+  }
+
+  function compareScrollSnapshots(before, after) {
+    const result = [];
+    for (let index = 0; index < before.length; index += 1) {
+      const beforeSnapshot = before[index];
+      const afterSnapshot = after.find((snapshot) => snapshot.node === beforeSnapshot.node);
+      result.push({
+        index,
+        stillConnected: beforeSnapshot.node.isConnected,
+        beforeScrollTop: beforeSnapshot.scrollTop,
+        afterScrollTop: afterSnapshot ? afterSnapshot.scrollTop : undefined,
+        delta: afterSnapshot ? afterSnapshot.scrollTop - beforeSnapshot.scrollTop : undefined,
+      });
+    }
+    return result;
+  }
+
+  function finalizeCloseProbe(status, viewerClosedAt) {
+    const internal = runtime.closeProbeInternal;
+    if (!internal) return runtime.closeProbe;
+    const messageNodes = collectProbeMessageNodes();
+    const afterScrolls = collectScrollSnapshots(messageNodes);
+    const now = performance.now();
+    runtime.closeProbe = {
+      ...runtime.closeProbe,
+      status,
+      finishedAt: Date.now(),
+      elapsedMs: Math.round(now - internal.startedAt),
+      closeElapsedFromIntentMs: internal.intentAt
+        ? Math.round((viewerClosedAt || now) - internal.intentAt)
+        : undefined,
+      viewerConnectedAfter: internal.viewer.isConnected,
+      viewerVisibleAfter: isElementVisible(internal.viewer),
+      afterChat: {
+        messageNodeCount: messageNodes.length,
+        visibleMessageNodeCount: messageNodes.filter(isElementVisible).length,
+        scrollContainers: describeScrollSnapshots(afterScrolls),
+      },
+      scrollChanges: compareScrollSnapshots(internal.beforeScrolls, afterScrolls),
+    };
+    clearCloseProbe();
+    console.log('[Telegram Media Continuity] Web K 关闭流程脱敏探测', runtime.closeProbe);
+    return runtime.closeProbe;
+  }
+
+  function armCloseFlowProbe() {
+    clearCloseProbe();
+    const viewer = findMediaViewer();
+    if (!viewer) {
+      runtime.closeProbe = {
+        status: 'no-visible-viewer',
+        armedAt: Date.now(),
+      };
+      console.warn('[Telegram Media Continuity] 未发现可见媒体查看器');
+      return runtime.closeProbe;
+    }
+
+    const messageNodes = collectProbeMessageNodes();
+    const beforeScrolls = collectScrollSnapshots(messageNodes);
+    const startedAt = performance.now();
+    runtime.closeProbe = {
+      status: 'armed',
+      armedAt: Date.now(),
+      viewer: describeElement(viewer),
+      candidateControls: collectViewerControls(viewer),
+      beforeChat: {
+        messageNodeCount: messageNodes.length,
+        visibleMessageNodeCount: messageNodes.filter(isElementVisible).length,
+        scrollContainers: describeScrollSnapshots(beforeScrolls),
+      },
+      intent: undefined,
+    };
+    runtime.closeProbeInternal = {
+      viewer,
+      startedAt,
+      intentAt: 0,
+      beforeScrolls,
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape' || !runtime.closeProbeInternal) return;
+      runtime.closeProbeInternal.intentAt = performance.now();
+      runtime.closeProbe.intent = {
+        type: 'escape',
+        elapsedMs: Math.round(runtime.closeProbeInternal.intentAt - startedAt),
+        repeat: Boolean(event.repeat),
+      };
+    };
+    const handlePointerDown = (event) => {
+      if (!runtime.closeProbeInternal || !(event.target instanceof Element)) return;
+      if (!viewer.contains(event.target)) return;
+      runtime.closeProbeInternal.intentAt = performance.now();
+      runtime.closeProbe.intent = {
+        type: 'viewer-pointer',
+        elapsedMs: Math.round(runtime.closeProbeInternal.intentAt - startedAt),
+        target: describeControl(event.target.closest('button, a[href], [role="button"], [tabindex]') || event.target),
+      };
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    window.addEventListener('pointerdown', handlePointerDown, true);
+    runtime.closeProbeCleanup.push(
+      () => window.removeEventListener('keydown', handleKeyDown, true),
+      () => window.removeEventListener('pointerdown', handlePointerDown, true),
+    );
+
+    const poll = () => {
+      const internal = runtime.closeProbeInternal;
+      if (!internal) return;
+      const elapsed = performance.now() - internal.startedAt;
+      if (!internal.viewer.isConnected) {
+        const closedAt = performance.now();
+        requestAnimationFrame(() => requestAnimationFrame(() => finalizeCloseProbe('viewer-removed', closedAt)));
+        return;
+      }
+      if (!isElementVisible(internal.viewer)) {
+        const closedAt = performance.now();
+        requestAnimationFrame(() => requestAnimationFrame(() => finalizeCloseProbe('viewer-hidden', closedAt)));
+        return;
+      }
+      if (elapsed >= CLOSE_PROBE_TIMEOUT_MS) {
+        finalizeCloseProbe('timeout');
+        return;
+      }
+      runtime.closeProbeTimer = window.setTimeout(poll, CLOSE_PROBE_POLL_MS);
+    };
+    runtime.closeProbeTimer = window.setTimeout(poll, CLOSE_PROBE_POLL_MS);
+    console.info('[Telegram Media Continuity] 关闭流程探测已布防，请手动点击官方关闭按钮或按 Esc');
+    return runtime.closeProbe;
   }
 
   function validateSettings(value) {
@@ -362,6 +1154,10 @@
       this.countdownId = 0;
       this.refreshTimer = 0;
       this.interactionTimer = 0;
+      this.pendingNavigationTimer = 0;
+      this.pendingMediaTarget = takeRecentSourceTarget();
+      this.lastConfirmedMediaTarget = undefined;
+      this.currentMappingLost = false;
 
       this.panel = new ControlPanel(this);
       this.observer = new MutationObserver(() => this.requestRefresh());
@@ -388,6 +1184,19 @@
       window.addEventListener('blur', this.handleFocusChange);
       window.addEventListener('pointerup', this.handlePointerUp, true);
       window.addEventListener('pointercancel', this.handlePointerUp, true);
+      this.handleViewerPointerDown = (event) => {
+        if (!(event.target instanceof Element)) return;
+        const button = event.target.closest('.media-viewer-switcher-left, .media-viewer-switcher-right');
+        if (!button || !this.viewer.contains(button)) return;
+        this.prepareNavigationTarget(button.classList.contains('media-viewer-switcher-right') ? 1 : -1);
+      };
+      this.handleViewerKeyDown = (event) => {
+        if (event.repeat || !isElementVisible(this.viewer)) return;
+        if (event.key === 'ArrowRight') this.prepareNavigationTarget(1);
+        else if (event.key === 'ArrowLeft') this.prepareNavigationTarget(-1);
+      };
+      this.viewer.addEventListener('pointerdown', this.handleViewerPointerDown, true);
+      window.addEventListener('keydown', this.handleViewerKeyDown, true);
 
       this.refresh();
       debugLog('Web K 媒体查看器会话开始', describeElement(viewer));
@@ -432,6 +1241,75 @@
       }
     }
 
+    prepareNavigationTarget(direction) {
+      const currentTarget = this.pendingMediaTarget || this.lastConfirmedMediaTarget;
+      const adjacentTarget = findAdjacentMediaTarget(currentTarget, direction);
+      window.clearTimeout(this.pendingNavigationTimer);
+      this.pendingNavigationTimer = 0;
+      if (!adjacentTarget) {
+        this.pendingMediaTarget = undefined;
+        return false;
+      }
+      adjacentTarget.fromFingerprint = this.currentFingerprint;
+      this.pendingMediaTarget = adjacentTarget;
+      this.pendingNavigationTimer = window.setTimeout(() => {
+        if (this.pendingMediaTarget?.fromFingerprint === this.currentFingerprint) {
+          this.pendingMediaTarget = undefined;
+        }
+        this.pendingNavigationTimer = 0;
+      }, NAVIGATION_TIMEOUT_MS);
+      return true;
+    }
+
+    clearPendingNavigation() {
+      window.clearTimeout(this.pendingNavigationTimer);
+      this.pendingNavigationTimer = 0;
+      this.pendingMediaTarget = undefined;
+    }
+
+    confirmCurrentMediaTarget() {
+      if (!isMediaSuccessfullyDisplayed(this.currentMedia)) return false;
+      const pending = this.pendingMediaTarget;
+      const pendingMatchesMedia = pending
+        && (pending.fromFingerprint === undefined || pending.fromFingerprint !== this.currentFingerprint);
+      if (pendingMatchesMedia) {
+        window.clearTimeout(this.pendingNavigationTimer);
+        this.pendingNavigationTimer = 0;
+        this.lastConfirmedMediaTarget = {
+          ...cloneMediaTarget(pending),
+          confirmedAt: Date.now(),
+          mediaFingerprint: this.currentFingerprint,
+        };
+        this.pendingMediaTarget = undefined;
+        this.currentMappingLost = false;
+        debugLog('已确认媒体消息映射', {
+          peerKey: this.lastConfirmedMediaTarget.peerKey,
+          messageKey: this.lastConfirmedMediaTarget.messageKey,
+          albumIndex: this.lastConfirmedMediaTarget.albumIndex,
+        });
+        return true;
+      }
+      if (this.lastConfirmedMediaTarget?.mediaFingerprint !== this.currentFingerprint) {
+        this.currentMappingLost = true;
+      }
+      return false;
+    }
+
+    createCloseSnapshot() {
+      const sequenceId = runtime.closeSequenceId + 1;
+      runtime.closeSequenceId = sequenceId;
+      if (this.currentMappingLost) {
+        return { sequenceId, target: undefined, reason: 'unmapped-current-media', capturedAt: Date.now() };
+      }
+      const target = cloneMediaTarget(this.lastConfirmedMediaTarget);
+      return {
+        sequenceId,
+        target: target?.confidence === 'high' ? target : undefined,
+        reason: target ? '' : 'no-confirmed-target',
+        capturedAt: Date.now(),
+      };
+    }
+
     bindMedia(media, nextFingerprint) {
       this.clearTimer();
       this.releaseMediaListeners();
@@ -468,19 +1346,32 @@
       }, { passive: true });
 
       if (media instanceof HTMLImageElement) {
-        add(media, 'load', () => this.scheduleForCurrentMedia(true), { once: true });
+        add(media, 'load', () => {
+          this.confirmCurrentMediaTarget();
+          this.scheduleForCurrentMedia(true);
+        }, { once: true });
         add(media, 'error', () => {
           this.clearTimer();
+          this.clearPendingNavigation();
           this.panel.setStatus('图片加载失败，请手动处理');
         }, { once: true });
       } else if (media instanceof HTMLVideoElement) {
+        const confirmVideo = () => this.confirmCurrentMediaTarget();
+        add(media, 'loadedmetadata', confirmVideo);
+        add(media, 'loadeddata', confirmVideo);
+        add(media, 'canplay', confirmVideo);
+        add(media, 'playing', confirmVideo);
         add(media, 'ended', () => {
           if (this.active && !this.paused) this.navigate(1, true);
         });
-        add(media, 'error', () => this.panel.setStatus('视频播放失败，请手动处理'));
+        add(media, 'error', () => {
+          this.clearPendingNavigation();
+          this.panel.setStatus('视频播放失败，请手动处理');
+        });
       }
 
       this.panel.render(this.viewState());
+      this.confirmCurrentMediaTarget();
       this.scheduleForCurrentMedia(true);
     }
 
@@ -595,11 +1486,13 @@
       }
 
       this.clearTimer();
+      this.prepareNavigationTarget(direction);
       const before = this.currentFingerprint;
       this.isNavigating = true;
       this.panel.setStatus(direction > 0 ? '正在切换下一项' : '正在切换上一项');
 
       if (!dispatchNavigation(this.viewer, direction)) {
+        this.clearPendingNavigation();
         this.isNavigating = false;
         this.panel.setStatus('官方切换控件未触发');
         this.panel.render(this.viewState());
@@ -616,6 +1509,7 @@
           return;
         }
         if (Date.now() - startedAt >= NAVIGATION_TIMEOUT_MS) {
+          this.clearPendingNavigation();
           this.isNavigating = false;
           this.panel.setStatus('媒体未变化，请执行调试检查');
           this.panel.render(this.viewState());
@@ -641,6 +1535,7 @@
       this.clearTimer();
       window.clearTimeout(this.refreshTimer);
       window.clearTimeout(this.interactionTimer);
+      window.clearTimeout(this.pendingNavigationTimer);
       this.releaseMediaListeners();
       this.observer.disconnect();
       document.removeEventListener('visibilitychange', this.handleVisibilityChange);
@@ -648,6 +1543,8 @@
       window.removeEventListener('blur', this.handleFocusChange);
       window.removeEventListener('pointerup', this.handlePointerUp, true);
       window.removeEventListener('pointercancel', this.handlePointerUp, true);
+      this.viewer.removeEventListener('pointerdown', this.handleViewerPointerDown, true);
+      window.removeEventListener('keydown', this.handleViewerKeyDown, true);
       this.panel.destroy();
       debugLog('Web K 媒体查看器会话结束');
     }
@@ -656,8 +1553,10 @@
   function scanPage() {
     runtime.scanTimer = 0;
     if (runtime.session && (!runtime.session.viewer.isConnected || !isElementVisible(runtime.session.viewer))) {
+      const closeSnapshot = runtime.session.createCloseSnapshot();
       runtime.session.destroy();
       runtime.session = undefined;
+      locateMessageAfterClose(closeSnapshot);
     }
 
     const viewer = findMediaViewer();
@@ -667,6 +1566,8 @@
       return;
     }
     if (runtime.session) runtime.session.destroy();
+    clearLocationTimers();
+    runtime.activeLocationSequenceId += 1;
     runtime.session = new ViewerSession(viewer);
   }
 
@@ -690,9 +1591,32 @@
           navigation: viewer ? navigationAvailability(viewer) : { previous: false, next: false },
           isZoomed: Boolean(viewer && isMediaZoomed(viewer)),
           hostMounted: Boolean(document.getElementById(SCRIPT_ID)),
+          sourceProbeCaptured: Boolean(runtime.lastSourceProbe),
+          closeProbeStatus: runtime.closeProbe?.status || 'idle',
+          locationStatus: runtime.lastLocationResult?.status || 'idle',
+          lastConfirmedTarget: runtime.session?.lastConfirmedMediaTarget
+            ? {
+              peerKey: runtime.session.lastConfirmedMediaTarget.peerKey,
+              messageKey: runtime.session.lastConfirmedMediaTarget.messageKey,
+              albumIndex: runtime.session.lastConfirmedMediaTarget.albumIndex,
+            }
+            : undefined,
         };
         console.log('[Telegram Media Continuity] Web K DOM 探测结果', result);
         return result;
+      },
+      inspectMessageMapping,
+      armCloseFlowProbe,
+      getCloseFlowProbe() {
+        return runtime.closeProbe;
+      },
+      getLastLocationResult() {
+        return runtime.lastLocationResult;
+      },
+      cancelCloseFlowProbe() {
+        clearCloseProbe();
+        runtime.closeProbe = { status: 'cancelled', finishedAt: Date.now() };
+        return runtime.closeProbe;
       },
       enableDebug(enabled = true) {
         runtime.debugEnabled = Boolean(enabled);
@@ -712,11 +1636,21 @@
       getSummary() {
         const viewer = findMediaViewer();
         return {
-          version: '0.3.0-k3',
+          version: '0.4.0-k5',
           client: 'web-k',
           settings: loadSettings(),
           viewerDetected: Boolean(viewer),
           navigation: viewer ? navigationAvailability(viewer) : { previous: false, next: false },
+          sourceProbeCaptured: Boolean(runtime.lastSourceProbe),
+          closeProbeStatus: runtime.closeProbe?.status || 'idle',
+          locationStatus: runtime.lastLocationResult?.status || 'idle',
+          lastConfirmedTarget: runtime.session?.lastConfirmedMediaTarget
+            ? {
+              peerKey: runtime.session.lastConfirmedMediaTarget.peerKey,
+              messageKey: runtime.session.lastConfirmedMediaTarget.messageKey,
+              albumIndex: runtime.session.lastConfirmedMediaTarget.albumIndex,
+            }
+            : undefined,
         };
       },
     });
@@ -736,6 +1670,7 @@
     runtime.debugEnabled = /(?:[?#&])ttMediaDebug=1(?:&|$)/.test(location.href);
     installDebugApi();
 
+    document.addEventListener('pointerdown', captureSourceProbe, true);
     runtime.observer = new MutationObserver(scheduleScan);
     runtime.observer.observe(document.body || document.documentElement, {
       childList: true,
@@ -746,7 +1681,13 @@
       else scheduleScan();
     }, 1000);
 
-    window.addEventListener('pagehide', () => runtime.session?.destroy());
+    window.addEventListener('pagehide', () => {
+      clearCloseProbe();
+      clearLocationTimers();
+      runtime.activeLocationSequenceId += 1;
+      document.removeEventListener('pointerdown', captureSourceProbe, true);
+      runtime.session?.destroy();
+    });
     window.addEventListener('popstate', scheduleScan);
     window.addEventListener('hashchange', scheduleScan);
     scheduleScan();
