@@ -232,68 +232,74 @@ tampermonkey/telegram-media-continuity-web-k.user.js
 https://web.telegram.org/k/*
 ```
 
-当前探测版本：
+当前开发版本：
 
 ```text
-0.3.1-k4
+0.4.0-k5
 ```
 
 ## 当前状态
 
-Web K 已完成并真实验收图片计时、连续切换、视频 `ended`、缩放暂停、手动导航和队列末尾功能。
+Web K 已完成图片计时、连续切换、视频 `ended`、缩放暂停、手动导航和队列末尾功能的既有真实验收。
 
-“关闭媒体查看器后定位最后浏览消息”仍处于 Draft PR #7 的 DOM 探测阶段。`0.3.1-k4` 只增加只读脱敏探测，不会自动定位、滚动或点击消息，也不会自动调用候选官方跳转控件。
+Draft PR #7 当前已实现“关闭媒体查看器后定位最后成功显示媒体所属消息”的代码，等待对 `0.4.0-k5` 进行真实浏览器验收。实现不会绑定未经确认的关闭按钮，而是在查看器实际隐藏或移除后执行一次有界定位。
 
-## 关闭定位脱敏探测
+## 关闭后定位行为
 
-安装或更新开发分支脚本后，刷新 Telegram Web K。从聊天消息中点击打开一张媒体，然后在控制台执行：
+- 从聊天消息点击打开媒体时，捕获公开的 `data-mid` 与 `data-peer-id`；
+- 图片完整加载、或视频取得有效元数据后，才确认其为“最后成功显示媒体”；
+- TT 控制条、Telegram 官方左右按钮和方向键切换均在新媒体成功显示后更新目标；
+- 新媒体仍在加载或加载失败时，保留上一项成功媒体；
+- 查看器关闭后，仅在当前活动聊天中精确匹配目标消息；
+- 匹配成功后滚动到聊天中部附近，并高亮约 1.2 秒；
+- 相册使用内部 `data-mid` 验证身份，但滚动和高亮整条消息；
+- 每次关闭只执行一个定位序列，用户开始新操作时会取消旧序列；
+- 无法建立高可信映射时正常关闭并提示，不滚动到猜测位置。
 
-```js
-copy(JSON.stringify(TelegramMediaContinuity.inspectMessageMapping(), null, 2));
-```
+## 虚拟列表边界
 
-该命令用于确认：
+目标消息不在当前 DOM 时，`0.4.0-k5` 不会：
 
-- 来源消息是否公开提供数字 `messageId` 和 `peerId`；
-- 活动媒体祖先节点有哪些类名和 `data-*` 属性名；
-- 当前页面有多少可见消息节点和滚动容器；
-- 查看器中有哪些候选关闭、作者、日期或消息跳转控件。
+- 猜测滚动方向；
+- 循环加载历史；
+- 读取 Telegram 私有状态或 IndexedDB；
+- 调用 Telegram API、Bot API 或 MTProto；
+- 自动点击未经真实页面确认的“跳转到消息”控件。
 
-探测结果不会输出聊天正文、频道名、用户名、原始链接或媒体 URL。
+此时脚本最多有界等待约 2.4 秒，然后提示“最后查看消息当前未加载”。待官方跳转 DOM 行为得到独立真实验证后，才能考虑加入单次跳转。
 
-### 官方关闭按钮时序
-
-保持查看器打开，执行：
-
-```js
-TelegramMediaContinuity.armCloseFlowProbe();
-```
-
-随后手动点击 Telegram 官方关闭按钮。查看器关闭后执行：
-
-```js
-copy(JSON.stringify(TelegramMediaContinuity.getCloseFlowProbe(), null, 2));
-```
-
-### Esc 关闭时序
-
-重新打开一张媒体，再次执行：
+## 调试命令
 
 ```js
-TelegramMediaContinuity.armCloseFlowProbe();
+TelegramMediaContinuity.getSummary();
+TelegramMediaContinuity.inspect();
+TelegramMediaContinuity.inspectMessageMapping();
+TelegramMediaContinuity.getLastLocationResult();
 ```
 
-手动按 `Esc` 关闭，然后执行：
+`getLastLocationResult()` 常见状态：
 
-```js
-copy(JSON.stringify(TelegramMediaContinuity.getCloseFlowProbe(), null, 2));
-```
+- `located`：已找到精确目标并执行居中、高亮；
+- `target-not-loaded`：目标不在当前虚拟列表 DOM；
+- `unmapped-current-media`：当前成功显示媒体无法建立高可信映射；
+- `cancelled-peer-changed`：关闭期间已切换到其他聊天；
+- `viewer-still-visible`：等待期内查看器仍可见。
 
-关闭流程探测最多等待 6 秒，只观察查看器移除或隐藏时序和聊天滚动变化，不阻止 Telegram 官方事件，不执行自动点击。
+调试结果只包含结构、状态和白名单数字 ID，不输出聊天正文、频道名、用户名、原始链接或媒体 URL。
 
-## Web K 当前边界
+## `0.4.0-k5` 浏览器验收重点
 
-- 在真实页面确认消息身份、关闭按钮和官方消息跳转行为前，不启用自动定位；
-- 目标消息不在虚拟列表 DOM 时，不通过猜测滚动、无限加载或私有接口寻找；
-- 所有探测状态只保存在当前页面内，不写入新的位置历史；
-- 出现异常时停用 Web K 脚本即可恢复 Telegram 原始行为。
+1. 从聊天消息打开普通图片，连续切换至少三项后关闭；
+2. 分别使用官方关闭动作和 `Esc`；
+3. 验证最终消息位于聊天中部附近，高亮约 1.2 秒后消失；
+4. 验证 TT 上一项、下一项和 Telegram 官方左右切换方向均对应正确消息；
+5. 验证新媒体未加载完成立即关闭时仍定位上一成功媒体；
+6. 验证相册切换后高亮整条相册消息；
+7. 验证目标不在 DOM、消息删除、切换频道时安全降级；
+8. 回归图片计时、视频 `ended`、缩放暂停、队列末尾和 Telegram 原生操作；
+9. 控制台无未捕获异常；
+10. 执行 `TelegramMediaContinuity.getLastLocationResult()` 记录脱敏结果。
+
+## 回退
+
+出现异常时，在 Tampermonkey 中停用 Web K 脚本即可恢复 Telegram 原始行为。脚本不修改 Telegram 代码、聊天内容或账号数据。
