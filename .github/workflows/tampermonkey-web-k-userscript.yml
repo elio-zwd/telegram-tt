@@ -1,0 +1,109 @@
+name: Web K userscript
+
+on:
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - tampermonkey/**
+      - .github/workflows/tampermonkey-web-k-userscript.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.11.1
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 连续构建两次并比较输出
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_command() {
+            set +e
+            "$@"
+            code=$?
+            set -e
+            echo "exit_code=${code} command=$*"
+            return "${code}"
+          }
+
+          run_command npm run build:tampermonkey:web-k
+          sha256sum tampermonkey/telegram-media-continuity-web-k.user.js | tee /tmp/web-k-first.sha256
+          run_command npm run build:tampermonkey:web-k
+          sha256sum tampermonkey/telegram-media-continuity-web-k.user.js | tee /tmp/web-k-second.sha256
+          run_command diff -u /tmp/web-k-first.sha256 /tmp/web-k-second.sha256
+
+      - name: 执行生成文件一致性检查
+        shell: bash
+        run: |
+          set +e
+          npm run check:tampermonkey:web-k
+          code=$?
+          set -e
+          echo "exit_code=${code} command=npm run check:tampermonkey:web-k"
+          exit "${code}"
+
+      - name: 执行生成脚本语法检查
+        shell: bash
+        run: |
+          set +e
+          node --check tampermonkey/telegram-media-continuity-web-k.user.js
+          code=$?
+          set -e
+          echo "exit_code=${code} command=node --check tampermonkey/telegram-media-continuity-web-k.user.js"
+          exit "${code}"
+
+      - name: 执行 Git 差异检查
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          run_command() {
+            set +e
+            "$@"
+            code=$?
+            set -e
+            echo "exit_code=${code} command=$*"
+            return "${code}"
+          }
+
+          run_command git diff --check "${BASE_SHA}...HEAD"
+          run_command git diff --name-status "${BASE_SHA}...HEAD"
+          run_command git status --short
+          run_command git rev-parse HEAD
+
+      - name: 上传生成 userscript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-media-continuity-web-k-userscript
+          path: tampermonkey/telegram-media-continuity-web-k.user.js
+          if-no-files-found: error
+
+      - name: 确认生成文件已提交
+        shell: bash
+        run: |
+          set +e
+          git diff --exit-code -- tampermonkey/telegram-media-continuity-web-k.user.js
+          code=$?
+          set -e
+          echo "exit_code=${code} command=git diff --exit-code -- tampermonkey/telegram-media-continuity-web-k.user.js"
+          exit "${code}"
