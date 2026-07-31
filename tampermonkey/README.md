@@ -240,27 +240,49 @@ https://web.telegram.org/k/*
 
 ## 当前状态
 
-Web K `0.4.0-k5` 已完成图片计时、连续切换、视频 `ended`、缩放暂停、手动导航、队列末尾、关闭后定位和相册消息级定位的真实浏览器验收。
+Web K `0.4.0-k5` 已在 PR #9 完成图片计时、连续切换、视频 `ended`、缩放暂停、手动导航、队列末尾、关闭后定位和相册消息级定位的真实浏览器验收。
 
-PR-M1 只建立模块化构建基座，不拆分业务逻辑、不增加产品功能。当前稳定实现完整保留在 `tampermonkey/src/web-k/legacy-main.js`，最终用户仍安装原路径的单文件 userscript。
+PR-M2 只抽取共享核心和 Web K 平台层，不新增产品功能。模块化后的源码真源位于 `tampermonkey/src/web-k/**`，最终用户仍安装原路径的单文件 userscript。由于结构发生变化，PR-M2 必须重新重复 PR #9 的 22 项真实浏览器场景；完成前保持 Draft。
+
+详细模块说明见：
+
+```text
+docs/tampermonkey-web-k-core-platform-m2.md
+```
 
 ## 源码与构建
 
-当前 M1 结构：
+当前 M2 结构：
 
 ```text
-tampermonkey/src/web-k/version.js
-        ↓
-tampermonkey/src/web-k/entry.js
-        ↓
-tampermonkey/src/web-k/legacy-main.js
+tampermonkey/src/web-k/
+├─ core/
+│  ├─ runtime.js
+│  ├─ lifecycle.js
+│  ├─ cleanup.js
+│  ├─ settings.js
+│  └─ logger.js
+├─ platform/
+│  ├─ dom.js
+│  ├─ media-viewer.js
+│  ├─ message-list.js
+│  └─ navigation.js
+├─ version.js
+├─ entry.js
+└─ legacy-main.js
         ↓ Vite / Rolldown
 tampermonkey/telegram-media-continuity-web-k.user.js
 ```
 
+- `core/**`：运行状态、日志、设置、清理和页面生命周期，不查询 Telegram 专属 DOM；
+- `platform/**`：集中 Web K 查看器、媒体、消息列表、相册映射和官方导航选择器；
+- `legacy-main.js`：M2 期间继续保留控制条、ViewerSession、图片/视频连续浏览、关闭后定位和调试 API 业务；
+- M3 才把剩余业务迁入独立 `features/**`。
+
 构建与检查：
 
 ```powershell
+npm ci
 npm run build:tampermonkey:web-k
 npm run check:tampermonkey:web-k
 node --check tampermonkey/telegram-media-continuity-web-k.user.js
@@ -275,7 +297,7 @@ node --check tampermonkey/telegram-media-continuity-web-k.user.js
 - 构建不会清空 `tampermonkey/` 目录；
 - 生成文件顶部必须保留 metadata 和“请勿直接手工修改”说明；
 - 不直接编辑生成文件，修改源码后重新执行构建；
-- `check:tampermonkey:web-k` 会校验 metadata、Web K `@match`、版本、IIFE、单文件输出和稳定 legacy Blob。
+- `check:tampermonkey:web-k` 会校验 metadata、Web K `@match`、版本、IIFE、单文件输出、M2 模块清单、核心层边界、平台选择器集中和原 storage key。
 
 ## 关闭后定位行为
 
@@ -322,17 +344,17 @@ TelegramMediaContinuity.getLastLocationResult();
 
 ## `0.4.0-k5` 浏览器验收重点
 
-1. 从聊天消息打开普通图片，连续切换至少三项后关闭；
-2. 分别使用官方关闭动作和 `Esc`；
-3. 验证最终消息位于聊天中部附近，高亮约 1.2 秒后消失；
-4. 验证 TT 上一项、下一项和 Telegram 官方左右切换方向均对应正确消息；
-5. 验证新媒体未加载完成立即关闭时仍定位上一成功媒体；
-6. 验证相册切换后高亮整条相册消息；
-7. 验证目标不在 DOM、消息删除、切换频道时安全降级；
-8. 回归图片计时、视频 `ended`、缩放暂停、队列末尾和 Telegram 原生操作；
-9. 控制台无未捕获异常；
-10. 执行 `TelegramMediaContinuity.getLastLocationResult()` 记录脱敏结果。
+1. 脚本注入、Shadow DOM 控制条与 Telegram 输入、滚动和导航回归；
+2. 图片连续浏览、视频 `ended`、循环视频提示和队列末尾停止；
+3. TT 与 Telegram 官方上一项/下一项、方向键切换；
+4. 悬停、失焦、缩放暂停以及退出缩放后重新计时；
+5. 官方关闭与 `Esc`、关闭后定位、相册定位；
+6. 目标不在 DOM 时安全降级，切换聊天取消旧任务；
+7. 调试 API 名称、返回结构和脱敏边界保持不变；
+8. 控制台无未捕获异常。
+
+完整 22 项场景应重复 PR #9 的本地验收记录。
 
 ## 回退
 
-出现异常时，在 Tampermonkey 中停用 Web K 脚本即可恢复 Telegram 原始行为。脚本不修改 Telegram 代码、聊天内容或账号数据。
+出现异常时，在 Tampermonkey 中停用 Web K 脚本即可恢复 Telegram 原始行为。脚本不修改 Telegram 代码、聊天内容或账号数据。由于版本和 storage schema 未变化，代码回退不需要迁移本地数据。
