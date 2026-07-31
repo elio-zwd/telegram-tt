@@ -3,6 +3,7 @@ name: Web K userscript
 on:
   pull_request:
     paths:
+      - .npmrc
       - package.json
       - package-lock.json
       - tampermonkey/**
@@ -95,7 +96,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: telegram-media-continuity-web-k-userscript
+          name: telegram-media-continuity-web-k-userscript-linux
           path: tampermonkey/telegram-media-continuity-web-k.user.js
           if-no-files-found: error
 
@@ -108,3 +109,84 @@ jobs:
           set -e
           echo "exit_code=${code} command=git diff --exit-code -- tampermonkey/telegram-media-continuity-web-k.user.js"
           exit "${code}"
+
+  verify-windows:
+    runs-on: windows-latest
+    env:
+      NODE_ENV: production
+      NPM_CONFIG_OMIT: optional
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.1
+          cache: npm
+
+      - name: 检查 npm 项目配置
+        shell: pwsh
+        run: |
+          npm config get include
+          npm config get omit
+          npm config get bin-links
+
+      - name: 安装依赖
+        shell: pwsh
+        run: npm ci
+
+      - name: 验证 Vite 与 Rolldown 安装
+        shell: pwsh
+        run: |
+          npm exec --no -- vite --version
+          node -e "console.log(require.resolve('rolldown/package.json'))"
+          node -e "console.log(require.resolve('@rolldown/binding-win32-x64-msvc/package.json'))"
+
+      - name: 连续构建两次并比较输出
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm run build:tampermonkey:web-k
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $firstHash = (Get-FileHash 'tampermonkey/telegram-media-continuity-web-k.user.js' -Algorithm SHA256).Hash.ToLower()
+          Write-Host "first_sha256=$firstHash"
+
+          npm run build:tampermonkey:web-k
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $secondHash = (Get-FileHash 'tampermonkey/telegram-media-continuity-web-k.user.js' -Algorithm SHA256).Hash.ToLower()
+          Write-Host "second_sha256=$secondHash"
+
+          if ($firstHash -ne $secondHash) {
+            throw "连续构建输出不一致：$firstHash != $secondHash"
+          }
+
+          $expectedHash = '7186262bd3f6e626afdc7ceaac82e64c29733f8e55905b83105f157dddb38b8b'
+          if ($secondHash -ne $expectedHash) {
+            throw "Windows 构建产物哈希与稳定产物不一致：$secondHash"
+          }
+
+      - name: 执行 Windows 静态检查
+        shell: pwsh
+        run: |
+          npm run check:tampermonkey:web-k
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --check tampermonkey/telegram-media-continuity-web-k.user.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- tampermonkey/telegram-media-continuity-web-k.user.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git status --short
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: 上传 Windows 生成 userscript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-media-continuity-web-k-userscript-windows
+          path: tampermonkey/telegram-media-continuity-web-k.user.js
+          if-no-files-found: error
