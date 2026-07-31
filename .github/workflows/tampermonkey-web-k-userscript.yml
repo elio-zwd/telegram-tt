@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
@@ -105,6 +105,23 @@ jobs:
           name: telegram-media-continuity-web-k-userscript-linux
           path: tampermonkey/telegram-media-continuity-web-k.user.js
           if-no-files-found: error
+
+      - name: 临时回填 M2 生成 userscript
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'refactor/tampermonkey-web-k-core-platform'
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- tampermonkey/telegram-media-continuity-web-k.user.js; then
+            echo '生成 userscript 已是最新版本'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tampermonkey/telegram-media-continuity-web-k.user.js
+          git commit -m 'build: 重新生成 Web K userscript'
+          git push origin "HEAD:${HEAD_REF}"
 
       - name: 确认生成文件已提交
         shell: bash
