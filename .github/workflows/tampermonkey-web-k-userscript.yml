@@ -10,7 +10,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: read
 
 jobs:
   verify:
@@ -98,7 +99,27 @@ jobs:
           path: tampermonkey/telegram-media-continuity-web-k.user.js
           if-no-files-found: error
 
+      - name: 回写生成 userscript
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          output=tampermonkey/telegram-media-continuity-web-k.user.js
+          if git diff --quiet -- "${output}"; then
+            echo "生成文件已经与源码一致"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${output}"
+          git commit -m "build: 更新 Web K userscript 生成文件"
+          git push origin "HEAD:${HEAD_REF}"
+
       - name: 确认生成文件已提交
+        if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set +e

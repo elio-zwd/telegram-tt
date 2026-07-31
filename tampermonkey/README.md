@@ -240,9 +240,42 @@ https://web.telegram.org/k/*
 
 ## 当前状态
 
-Web K 已完成图片计时、连续切换、视频 `ended`、缩放暂停、手动导航和队列末尾功能的既有真实验收。
+Web K `0.4.0-k5` 已完成图片计时、连续切换、视频 `ended`、缩放暂停、手动导航、队列末尾、关闭后定位和相册消息级定位的真实浏览器验收。
 
-Draft PR #7 当前已实现“关闭媒体查看器后定位最后成功显示媒体所属消息”的代码，等待对 `0.4.0-k5` 进行真实浏览器验收。实现不会绑定未经确认的关闭按钮，而是在查看器实际隐藏或移除后执行一次有界定位。
+PR-M1 只建立模块化构建基座，不拆分业务逻辑、不增加产品功能。当前稳定实现完整保留在 `tampermonkey/src/web-k/legacy-main.js`，最终用户仍安装原路径的单文件 userscript。
+
+## 源码与构建
+
+当前 M1 结构：
+
+```text
+tampermonkey/src/web-k/version.js
+        ↓
+tampermonkey/src/web-k/entry.js
+        ↓
+tampermonkey/src/web-k/legacy-main.js
+        ↓ Vite / Rolldown
+tampermonkey/telegram-media-continuity-web-k.user.js
+```
+
+构建与检查：
+
+```powershell
+npm run build:tampermonkey:web-k
+npm run check:tampermonkey:web-k
+node --check tampermonkey/telegram-media-continuity-web-k.user.js
+```
+
+生成规则：
+
+- 版本只在 `tampermonkey/src/web-k/version.js` 维护；
+- userscript metadata 由 `tampermonkey/build/web-k-userscript-metadata.js` 生成；
+- 构建输出为一个未压缩 IIFE；
+- 禁止动态 import、额外 chunk 和 sourcemap；
+- 构建不会清空 `tampermonkey/` 目录；
+- 生成文件顶部必须保留 metadata 和“请勿直接手工修改”说明；
+- 不直接编辑生成文件，修改源码后重新执行构建；
+- `check:tampermonkey:web-k` 会校验 metadata、Web K `@match`、版本、IIFE、单文件输出和稳定 legacy Blob。
 
 ## 关闭后定位行为
 
