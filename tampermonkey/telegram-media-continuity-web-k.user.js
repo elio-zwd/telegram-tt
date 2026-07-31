@@ -13,12 +13,614 @@
 	//#region tampermonkey/src/web-k/version.js
 	var WEB_K_VERSION = "0.4.0-k5";
 	//#endregion
+	//#region tampermonkey/src/web-k/core/cleanup.js
+	function addEventListenerCleanup(cleanupList, target, type, listener, options) {
+		target.addEventListener(type, listener, options);
+		cleanupList.push(() => target.removeEventListener(type, listener, options));
+	}
+	function runCleanupList(cleanupList) {
+		for (const cleanup of cleanupList.splice(0)) cleanup();
+	}
+	function clearTimeoutId(timerId) {
+		if (timerId) window.clearTimeout(timerId);
+		return 0;
+	}
+	function clearIntervalId(timerId) {
+		if (timerId) window.clearInterval(timerId);
+		return 0;
+	}
+	function disconnectObserver(observer) {
+		observer?.disconnect();
+	}
+	//#endregion
+	//#region tampermonkey/src/web-k/core/runtime.js
+	var runtime = {
+		session: void 0,
+		observer: void 0,
+		scanTimer: 0,
+		periodicTimer: 0,
+		debugEnabled: false,
+		lastSourceProbe: void 0,
+		closeProbe: void 0,
+		closeProbeInternal: void 0,
+		closeProbeTimer: 0,
+		closeProbeCleanup: [],
+		lastSourceTarget: void 0,
+		closeSequenceId: 0,
+		activeLocationSequenceId: 0,
+		locationTimers: /* @__PURE__ */ new Set(),
+		lastLocationResult: void 0
+	};
+	//#endregion
+	//#region tampermonkey/src/web-k/core/lifecycle.js
+	var SCAN_DELAY_MS = 160;
+	var PERIODIC_SCAN_MS = 1e3;
+	var INITIALIZED_MARKER = "web-k-ready";
+	function createLifecycle({ captureSourceTarget, clearCloseProbe, clearLocationTimers, createSession, findMediaViewer, installDebugApi, isElementVisible, locateMessageAfterClose }) {
+		function scanPage() {
+			runtime.scanTimer = 0;
+			if (runtime.session && (!runtime.session.viewer.isConnected || !isElementVisible(runtime.session.viewer))) {
+				const closeSnapshot = runtime.session.createCloseSnapshot();
+				runtime.session.destroy();
+				runtime.session = void 0;
+				locateMessageAfterClose(closeSnapshot);
+			}
+			const viewer = findMediaViewer();
+			if (!viewer) return;
+			if (runtime.session && runtime.session.viewer === viewer) {
+				runtime.session.requestRefresh();
+				return;
+			}
+			if (runtime.session) runtime.session.destroy();
+			clearLocationTimers();
+			runtime.activeLocationSequenceId += 1;
+			runtime.session = createSession(viewer);
+		}
+		function scheduleScan() {
+			if (runtime.scanTimer) return;
+			runtime.scanTimer = window.setTimeout(scanPage, SCAN_DELAY_MS);
+		}
+		function handlePageHide() {
+			clearCloseProbe();
+			clearLocationTimers();
+			runtime.activeLocationSequenceId += 1;
+			document.removeEventListener("pointerdown", captureSourceTarget, true);
+			runtime.session?.destroy();
+		}
+		function initializeScript() {
+			if (document.documentElement.dataset.telegramMediaContinuity === INITIALIZED_MARKER) return;
+			document.documentElement.dataset.telegramMediaContinuity = INITIALIZED_MARKER;
+			runtime.debugEnabled = /(?:[?#&])ttMediaDebug=1(?:&|$)/.test(location.href);
+			installDebugApi(scheduleScan);
+			document.addEventListener("pointerdown", captureSourceTarget, true);
+			runtime.observer = new MutationObserver(scheduleScan);
+			runtime.observer.observe(document.body || document.documentElement, {
+				childList: true,
+				subtree: true
+			});
+			runtime.periodicTimer = window.setInterval(() => {
+				if (runtime.session) runtime.session.requestRefresh();
+				else scheduleScan();
+			}, PERIODIC_SCAN_MS);
+			window.addEventListener("pagehide", handlePageHide);
+			window.addEventListener("popstate", scheduleScan);
+			window.addEventListener("hashchange", scheduleScan);
+			scheduleScan();
+			console.info("[Telegram Media Continuity] Web K script initialized");
+		}
+		return Object.freeze({
+			initializeScript,
+			scheduleScan
+		});
+	}
+	//#endregion
+	//#region tampermonkey/src/web-k/core/logger.js
+	function debugLog(message, data) {
+		if (!runtime.debugEnabled) return;
+		if (data === void 0) console.debug(`[Telegram Media Continuity] ${message}`);
+		else console.debug(`[Telegram Media Continuity] ${message}`, data);
+	}
+	//#endregion
+	//#region tampermonkey/src/web-k/core/settings.js
+	var STORAGE_KEY = "tt.mediaContinuity.v1";
+	var DURATIONS = [
+		2e3,
+		3e3,
+		5e3,
+		8e3,
+		1e4,
+		15e3,
+		3e4
+	];
+	var DEFAULT_SETTINGS = Object.freeze({
+		continuousEnabled: false,
+		photoDurationMs: 5e3,
+		panelCollapsed: false
+	});
+	function isPlainObject(value) {
+		return Boolean(value && typeof value === "object" && !Array.isArray(value));
+	}
+	function validateSettings(value) {
+		const source = isPlainObject(value) ? value : {};
+		return {
+			continuousEnabled: typeof source.continuousEnabled === "boolean" ? source.continuousEnabled : DEFAULT_SETTINGS.continuousEnabled,
+			photoDurationMs: DURATIONS.includes(source.photoDurationMs) ? source.photoDurationMs : DEFAULT_SETTINGS.photoDurationMs,
+			panelCollapsed: typeof source.panelCollapsed === "boolean" ? source.panelCollapsed : DEFAULT_SETTINGS.panelCollapsed
+		};
+	}
+	function loadSettings() {
+		try {
+			const raw = localStorage.getItem(STORAGE_KEY);
+			if (!raw) return { ...DEFAULT_SETTINGS };
+			const parsed = JSON.parse(raw);
+			if (isPlainObject(parsed) && isPlainObject(parsed.settings)) return validateSettings(parsed.settings);
+			return validateSettings(parsed);
+		} catch (error) {
+			debugLog("读取本地设置失败", error);
+			return { ...DEFAULT_SETTINGS };
+		}
+	}
+	function saveSettings(settings) {
+		try {
+			const raw = localStorage.getItem(STORAGE_KEY);
+			const parsed = raw ? JSON.parse(raw) : {};
+			const nextState = isPlainObject(parsed) ? parsed : {};
+			nextState.settings = validateSettings(settings);
+			localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
+			return nextState.settings;
+		} catch (error) {
+			debugLog("写入本地设置失败", error);
+			return validateSettings(settings);
+		}
+	}
+	function updateSettings(current, patch) {
+		return saveSettings({
+			...current,
+			...patch
+		});
+	}
+	//#endregion
+	//#region tampermonkey/src/web-k/platform/dom.js
+	var MESSAGE_ID_ATTRIBUTES = Object.freeze([
+		"data-mid",
+		"data-message-id",
+		"data-msg-id",
+		"data-message"
+	]);
+	var PEER_ID_ATTRIBUTES = Object.freeze(["data-peer-id", "data-peer"]);
+	var NUMERIC_DATA_ATTRIBUTES = Object.freeze([
+		...MESSAGE_ID_ATTRIBUTES,
+		...PEER_ID_ATTRIBUTES,
+		"data-index",
+		"data-media-index"
+	]);
+	function isElementVisible(element) {
+		if (!(element instanceof Element) || !element.isConnected) return false;
+		const rect = element.getBoundingClientRect();
+		if (rect.width < 1 || rect.height < 1) return false;
+		const style = getComputedStyle(element);
+		return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && element.getAttribute("aria-hidden") !== "true" && !element.hasAttribute("hidden");
+	}
+	function getNumericDataAttributes(element) {
+		if (!(element instanceof Element)) return {};
+		const result = {};
+		for (const attributeName of NUMERIC_DATA_ATTRIBUTES) {
+			const value = element.getAttribute(attributeName);
+			if (value && /^-?\d+$/.test(value)) result[attributeName] = value;
+		}
+		return result;
+	}
+	function describeElement(element) {
+		if (!(element instanceof Element)) return void 0;
+		const rect = element.getBoundingClientRect();
+		return {
+			tag: element.tagName.toLowerCase(),
+			classNames: Array.from(element.classList).slice(0, 12),
+			role: element.getAttribute("role") || "",
+			hasAriaLabel: element.hasAttribute("aria-label"),
+			hasTitle: element.hasAttribute("title"),
+			hasHref: element instanceof HTMLAnchorElement && element.hasAttribute("href"),
+			dataAttributeNames: Array.from(element.attributes).filter((attribute) => attribute.name.startsWith("data-")).slice(0, 16).map((attribute) => attribute.name),
+			numericDataAttributes: getNumericDataAttributes(element),
+			rect: {
+				width: Math.round(rect.width),
+				height: Math.round(rect.height),
+				left: Math.round(rect.left),
+				top: Math.round(rect.top)
+			},
+			imageCount: element.querySelectorAll("img").length,
+			videoCount: element.querySelectorAll("video").length,
+			buttonCount: element.querySelectorAll("button, [role=\"button\"]").length
+		};
+	}
+	function classifyUrlToken(value) {
+		if (!value) return "empty";
+		if (/^-?\d+$/.test(value)) return "number";
+		return "text";
+	}
+	function describeHrefPattern(element) {
+		if (!(element instanceof HTMLAnchorElement) || !element.hasAttribute("href")) return void 0;
+		try {
+			const url = new URL(element.href, location.href);
+			const hashPath = url.hash.split("?")[0].replace(/^#/, "");
+			return {
+				protocol: url.protocol,
+				host: [
+					"web.telegram.org",
+					"t.me",
+					"telegram.me"
+				].includes(url.hostname) ? url.hostname : "other",
+				pathPattern: url.pathname.split("/").filter(Boolean).slice(0, 8).map(classifyUrlToken),
+				hashPattern: hashPath.split("/").filter(Boolean).slice(0, 8).map(classifyUrlToken),
+				queryKeys: Array.from(url.searchParams.keys()).slice(0, 12),
+				hashQueryKeys: url.hash.includes("?") ? Array.from(new URLSearchParams(url.hash.slice(url.hash.indexOf("?") + 1)).keys()).slice(0, 12) : []
+			};
+		} catch (error) {
+			return { invalid: true };
+		}
+	}
+	function describeControl(element) {
+		const description = describeElement(element);
+		if (!description) return void 0;
+		return {
+			...description,
+			hasSvg: Boolean(element.querySelector("svg")),
+			hrefPattern: describeHrefPattern(element)
+		};
+	}
+	function findScrollableAncestor(element) {
+		let current = element instanceof Element ? element.parentElement : void 0;
+		while (current && current !== document.body && current !== document.documentElement) {
+			const style = getComputedStyle(current);
+			if (/(auto|scroll|overlay)/.test(style.overflowY) && current.scrollHeight > current.clientHeight + 2) return current;
+			current = current.parentElement;
+		}
+	}
+	//#endregion
+	//#region tampermonkey/src/web-k/platform/media-viewer.js
+	var mediaNodeIds = /* @__PURE__ */ new WeakMap();
+	var nextMediaNodeId = 1;
+	function findMediaViewer() {
+		const viewer = document.querySelector(".media-viewer-whole");
+		return isElementVisible(viewer) ? viewer : void 0;
+	}
+	function findMediaRoot(viewer) {
+		return viewer.querySelector(".media-viewer-movers") || viewer;
+	}
+	function mediaScore(media, rootRect) {
+		if (!isElementVisible(media)) return -Infinity;
+		const rect = media.getBoundingClientRect();
+		if (rect.width < 80 || rect.height < 60) return -Infinity;
+		const rootCenterX = rootRect.left + rootRect.width / 2;
+		const rootCenterY = rootRect.top + rootRect.height / 2;
+		const mediaCenterX = rect.left + rect.width / 2;
+		const mediaCenterY = rect.top + rect.height / 2;
+		const distance = Math.hypot(mediaCenterX - rootCenterX, mediaCenterY - rootCenterY);
+		let score = Math.min(rect.width * rect.height / 1e3, 1200) - distance;
+		if (media instanceof HTMLVideoElement && !media.paused) score += 300;
+		if (rect.left <= rootCenterX && rect.right >= rootCenterX && rect.top <= rootCenterY && rect.bottom >= rootCenterY) score += 500;
+		return score;
+	}
+	function findActiveMedia(viewer) {
+		const root = findMediaRoot(viewer);
+		const rootRect = root.getBoundingClientRect();
+		let best;
+		let bestScore = -Infinity;
+		for (const media of root.querySelectorAll("img, video")) {
+			const score = mediaScore(media, rootRect);
+			if (score > bestScore) {
+				bestScore = score;
+				best = media;
+			}
+		}
+		return best;
+	}
+	function getMediaNodeId(media) {
+		if (!mediaNodeIds.has(media)) {
+			mediaNodeIds.set(media, nextMediaNodeId);
+			nextMediaNodeId += 1;
+		}
+		return mediaNodeIds.get(media);
+	}
+	function mediaFingerprint(media) {
+		if (!media) return "none";
+		const source = media.currentSrc || media.src || "";
+		const size = media instanceof HTMLVideoElement ? `${media.videoWidth}x${media.videoHeight}` : `${media.naturalWidth}x${media.naturalHeight}`;
+		return `${media.tagName}|${getMediaNodeId(media)}|${size}|${source.slice(-120)}`;
+	}
+	function isMediaSuccessfullyDisplayed(media) {
+		if (!isElementVisible(media)) return false;
+		if (media instanceof HTMLImageElement) return media.complete && media.naturalWidth > 0;
+		if (media instanceof HTMLVideoElement) return media.readyState >= HTMLMediaElement.HAVE_METADATA || media.videoWidth > 0 || media.videoHeight > 0;
+		return false;
+	}
+	function isMediaZoomed(viewer) {
+		return viewer.classList.contains("is-zooming");
+	}
+	//#endregion
+	//#region tampermonkey/src/web-k/platform/message-list.js
+	var CHAT_SCROLL_SELECTOR = ".scrollable.scrollable-y.bubbles-scrollable";
+	function findMessageNode(target) {
+		let current = target instanceof Element ? target : void 0;
+		for (let depth = 0; current && depth < 14; depth += 1) {
+			if (MESSAGE_ID_ATTRIBUTES.some((attributeName) => {
+				const value = current.getAttribute(attributeName);
+				return Boolean(value && /^-?\d+$/.test(value));
+			})) return current;
+			current = current.parentElement;
+		}
+	}
+	function getMessageIdentity(messageNode) {
+		if (!(messageNode instanceof Element)) return void 0;
+		let messageId = "";
+		let peerId = "";
+		for (const attributeName of MESSAGE_ID_ATTRIBUTES) {
+			const value = messageNode.getAttribute(attributeName);
+			if (value && /^-?\d+$/.test(value)) {
+				messageId = value;
+				break;
+			}
+		}
+		for (const attributeName of PEER_ID_ATTRIBUTES) {
+			const value = messageNode.getAttribute(attributeName);
+			if (value && /^-?\d+$/.test(value)) {
+				peerId = value;
+				break;
+			}
+		}
+		return messageId ? {
+			messageId,
+			peerId
+		} : void 0;
+	}
+	function findMediaFromTarget(target, messageNode, point) {
+		if (!(target instanceof Element) || !(messageNode instanceof Element)) return void 0;
+		if (target.matches("img, video")) return target;
+		let current = target;
+		while (current && current !== messageNode) {
+			const media = current.querySelectorAll("img, video");
+			if (media.length === 1) return media[0];
+			current = current.parentElement;
+		}
+		const candidates = Array.from(messageNode.querySelectorAll("img, video")).filter((item) => {
+			const rect = item.getBoundingClientRect();
+			return rect.width >= 32 && rect.height >= 32;
+		});
+		if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+			const hit = candidates.find((item) => {
+				const rect = item.getBoundingClientRect();
+				return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+			});
+			if (hit) return hit;
+		}
+		return candidates.length === 1 ? candidates[0] : void 0;
+	}
+	function getProbeAlbumIndex(messageNode, media) {
+		if (!(messageNode instanceof Element) || !(media instanceof Element)) return 0;
+		const index = Array.from(messageNode.querySelectorAll("img, video")).filter((item) => {
+			const rect = item.getBoundingClientRect();
+			return rect.width >= 32 && rect.height >= 32;
+		}).indexOf(media);
+		return index >= 0 ? index : 0;
+	}
+	function captureSourceTarget(event, scriptId) {
+		const target = event.target;
+		if (!(target instanceof Element) || target.closest(`#${scriptId}`) || findMediaViewer()) return void 0;
+		const result = { shouldCancelLocation: true };
+		const messageNode = findMessageNode(target);
+		const identity = getMessageIdentity(messageNode);
+		if (!messageNode || !identity) return result;
+		const media = findMediaFromTarget(target, messageNode, {
+			x: event.clientX,
+			y: event.clientY
+		});
+		if (!media) return result;
+		const ancestorChain = [];
+		let current = target;
+		for (let depth = 0; current && current !== messageNode && depth < 6; depth += 1) {
+			ancestorChain.push(describeElement(current));
+			current = current.parentElement;
+		}
+		ancestorChain.push(describeElement(messageNode));
+		const capturedAt = Date.now();
+		const albumIndex = getProbeAlbumIndex(messageNode, media);
+		return {
+			...result,
+			probe: {
+				capturedAt,
+				identity,
+				albumIndex,
+				mediaTag: media.tagName.toLowerCase(),
+				messageNode: describeElement(messageNode),
+				targetAncestors: ancestorChain.filter(Boolean)
+			},
+			target: identity.peerId ? {
+				capturedAt,
+				peerKey: identity.peerId,
+				messageKey: identity.messageId,
+				albumIndex,
+				source: "source-message",
+				confidence: "high",
+				sourceMessageNode: messageNode
+			} : void 0
+		};
+	}
+	function cloneMediaTarget(target) {
+		if (!target) return void 0;
+		return {
+			capturedAt: target.capturedAt || Date.now(),
+			peerKey: String(target.peerKey || ""),
+			messageKey: String(target.messageKey || ""),
+			albumIndex: Number.isInteger(target.albumIndex) ? target.albumIndex : 0,
+			source: target.source || "source-message",
+			confidence: target.confidence || "high",
+			confirmedAt: target.confirmedAt || 0,
+			mediaFingerprint: target.mediaFingerprint || "",
+			sourceMessageNode: target.sourceMessageNode
+		};
+	}
+	function isChatMediaNode(node) {
+		if (!(node instanceof Element) || node.classList.contains("pinned-message")) return false;
+		if (!getMessageIdentity(node)?.peerId || !node.closest(CHAT_SCROLL_SELECTOR)) return false;
+		if (node.classList.contains("album-item")) return true;
+		if (!node.classList.contains("bubble")) return false;
+		if (node.querySelector(":scope .album-item[data-mid][data-peer-id]")) return false;
+		return node.classList.contains("photo") || node.classList.contains("video") || node.classList.contains("is-gif") || node.classList.contains("document");
+	}
+	function getAlbumItemIndex(node) {
+		if (!(node instanceof Element) || !node.classList.contains("album-item")) return 0;
+		const parent = node.parentElement;
+		if (!parent) return 0;
+		const index = Array.from(parent.children).filter((item) => item.classList?.contains("album-item")).indexOf(node);
+		return index >= 0 ? index : 0;
+	}
+	function createTargetFromMessageNode(node) {
+		const identity = getMessageIdentity(node);
+		if (!identity?.messageId || !identity.peerId) return void 0;
+		return {
+			capturedAt: Date.now(),
+			peerKey: identity.peerId,
+			messageKey: identity.messageId,
+			albumIndex: getAlbumItemIndex(node),
+			source: "source-message",
+			confidence: "high",
+			confirmedAt: 0,
+			mediaFingerprint: "",
+			sourceMessageNode: node
+		};
+	}
+	function findActiveChatScrollContainer() {
+		const candidates = Array.from(document.querySelectorAll(CHAT_SCROLL_SELECTOR)).filter(isElementVisible);
+		candidates.sort((left, right) => {
+			const leftRect = left.getBoundingClientRect();
+			const rightRect = right.getBoundingClientRect();
+			return rightRect.width * rightRect.height - leftRect.width * leftRect.height;
+		});
+		return candidates[0];
+	}
+	function collectOrderedChatMediaTargets(peerKey) {
+		const container = findActiveChatScrollContainer();
+		if (!container || !peerKey) return [];
+		const nodes = Array.from(container.querySelectorAll("[data-mid][data-peer-id]")).filter((node) => isChatMediaNode(node) && getMessageIdentity(node)?.peerId === peerKey);
+		nodes.sort((left, right) => {
+			if (left === right) return 0;
+			return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+		});
+		return nodes.map(createTargetFromMessageNode).filter(Boolean);
+	}
+	function findTargetIndex(targets, target) {
+		if (!target) return -1;
+		const nodeIndex = targets.findIndex((candidate) => candidate.sourceMessageNode === target.sourceMessageNode);
+		if (nodeIndex >= 0) return nodeIndex;
+		return targets.findIndex((candidate) => candidate.peerKey === target.peerKey && candidate.messageKey === target.messageKey);
+	}
+	function findAdjacentMediaTarget(target, direction) {
+		if (!target || !direction) return void 0;
+		const targets = collectOrderedChatMediaTargets(target.peerKey);
+		const index = findTargetIndex(targets, target);
+		if (index < 0) return void 0;
+		return cloneMediaTarget(targets[index + (direction > 0 ? 1 : -1)]);
+	}
+	function getActiveChatPeerKey(container) {
+		if (!(container instanceof Element)) return "";
+		const counts = /* @__PURE__ */ new Map();
+		for (const node of container.querySelectorAll("[data-mid][data-peer-id]")) {
+			const identity = getMessageIdentity(node);
+			if (!identity?.peerId || node.classList.contains("pinned-message")) continue;
+			counts.set(identity.peerId, (counts.get(identity.peerId) || 0) + 1);
+		}
+		let bestKey = "";
+		let bestCount = 0;
+		for (const [peerKey, count] of counts) if (count > bestCount) {
+			bestKey = peerKey;
+			bestCount = count;
+		}
+		return bestKey;
+	}
+	function findExactMessageNode(target) {
+		const container = findActiveChatScrollContainer();
+		if (!container || !target?.messageKey) return { reason: "chat-not-ready" };
+		const activePeerKey = getActiveChatPeerKey(container);
+		if (target.peerKey && activePeerKey && target.peerKey !== activePeerKey) return {
+			reason: "peer-changed",
+			container
+		};
+		const sourceNode = target.sourceMessageNode;
+		if (sourceNode instanceof Element && sourceNode.isConnected && container.contains(sourceNode)) {
+			const identity = getMessageIdentity(sourceNode);
+			if (identity?.messageId === target.messageKey && (!target.peerKey || identity.peerId === target.peerKey)) return {
+				node: sourceNode.classList.contains("album-item") ? sourceNode.closest(".bubble") || sourceNode : sourceNode,
+				container,
+				reason: "source-node"
+			};
+		}
+		const escapedMessageKey = globalThis.CSS?.escape ? CSS.escape(target.messageKey) : target.messageKey.replace(/[^-\d]/g, "");
+		const matches = Array.from(container.querySelectorAll(`[data-mid="${escapedMessageKey}"]`)).filter((node) => {
+			const identity = getMessageIdentity(node);
+			return identity?.messageId === target.messageKey && (!target.peerKey || identity.peerId === target.peerKey) && !node.classList.contains("pinned-message");
+		});
+		const identityNode = matches.find((node) => node.classList.contains("album-item")) || matches.find((node) => node.classList.contains("bubble")) || matches[0];
+		const displayNode = identityNode?.classList.contains("album-item") ? identityNode.closest(".bubble") || identityNode : identityNode;
+		return displayNode ? {
+			node: displayNode,
+			container,
+			reason: "exact-dom-match"
+		} : {
+			container,
+			reason: "not-loaded"
+		};
+	}
+	function collectMessageNodes() {
+		const selector = MESSAGE_ID_ATTRIBUTES.map((name) => `[${name}]`).join(", ");
+		const nodes = [];
+		const seen = /* @__PURE__ */ new Set();
+		for (const element of document.querySelectorAll(selector)) {
+			if (!getMessageIdentity(element) || seen.has(element)) continue;
+			seen.add(element);
+			nodes.push(element);
+			if (nodes.length >= 600) break;
+		}
+		return nodes;
+	}
+	//#endregion
+	//#region tampermonkey/src/web-k/platform/navigation.js
+	var PREVIOUS_SELECTOR = ".media-viewer-switcher-left";
+	var NEXT_SELECTOR = ".media-viewer-switcher-right";
+	var NAVIGATION_SELECTOR = `${PREVIOUS_SELECTOR}, ${NEXT_SELECTOR}`;
+	function getNavigationButton(viewer, direction) {
+		const selector = direction > 0 ? NEXT_SELECTOR : PREVIOUS_SELECTOR;
+		const button = viewer.querySelector(selector);
+		if (!isElementVisible(button)) return void 0;
+		if (button.classList.contains("hide")) return void 0;
+		return button;
+	}
+	function navigationAvailability(viewer) {
+		return {
+			previous: Boolean(getNavigationButton(viewer, -1)),
+			next: Boolean(getNavigationButton(viewer, 1))
+		};
+	}
+	function dispatchNavigation(viewer, direction) {
+		const button = getNavigationButton(viewer, direction);
+		if (!button) return false;
+		debugLog("触发 Web K 官方方向控件", {
+			direction,
+			button: describeElement(button)
+		});
+		button.click();
+		return true;
+	}
+	function getNavigationDirectionFromTarget(viewer, target) {
+		if (!(target instanceof Element)) return 0;
+		const button = target.closest(NAVIGATION_SELECTOR);
+		if (!button || !viewer.contains(button)) return 0;
+		return button.matches(NEXT_SELECTOR) ? 1 : -1;
+	}
+	//#endregion
 	//#region tampermonkey/src/web-k/legacy-main.js
 	(() => {
 		"use strict";
 		const SCRIPT_ID = "telegram-media-continuity-host";
-		const STORAGE_KEY = "tt.mediaContinuity.v1";
-		const SCAN_DELAY_MS = 160;
 		const NAVIGATION_TIMEOUT_MS = 3e3;
 		const INTERACTION_COOLDOWN_MS = 900;
 		const CLOSE_PROBE_TIMEOUT_MS = 6e3;
@@ -28,388 +630,26 @@
 		const LOCATION_POLL_MS = 80;
 		const LOCATION_REVIEW_DELAY_MS = 420;
 		const LOCATION_HIGHLIGHT_MS = 1200;
-		const CHAT_SCROLL_SELECTOR = ".scrollable.scrollable-y.bubbles-scrollable";
 		const LOCATION_STYLE_ID = "telegram-media-continuity-location-style";
 		const LOCATION_HIGHLIGHT_CLASS = "tt-media-continuity-location-highlight";
 		const LOCATION_NOTICE_ID = "telegram-media-continuity-location-notice";
-		const PROBE_MESSAGE_ID_ATTRIBUTES = Object.freeze([
-			"data-mid",
-			"data-message-id",
-			"data-msg-id",
-			"data-message"
-		]);
-		const PROBE_PEER_ID_ATTRIBUTES = Object.freeze(["data-peer-id", "data-peer"]);
-		const PROBE_NUMERIC_ATTRIBUTES = Object.freeze([
-			...PROBE_MESSAGE_ID_ATTRIBUTES,
-			...PROBE_PEER_ID_ATTRIBUTES,
-			"data-index",
-			"data-media-index"
-		]);
-		const DURATIONS = [
-			2e3,
-			3e3,
-			5e3,
-			8e3,
-			1e4,
-			15e3,
-			3e4
-		];
-		const DEFAULT_SETTINGS = Object.freeze({
-			continuousEnabled: false,
-			photoDurationMs: 5e3,
-			panelCollapsed: false
-		});
-		const runtime = {
-			session: void 0,
-			observer: void 0,
-			scanTimer: 0,
-			periodicTimer: 0,
-			debugEnabled: false,
-			lastSourceProbe: void 0,
-			closeProbe: void 0,
-			closeProbeInternal: void 0,
-			closeProbeTimer: 0,
-			closeProbeCleanup: [],
-			lastSourceTarget: void 0,
-			closeSequenceId: 0,
-			activeLocationSequenceId: 0,
-			locationTimers: /* @__PURE__ */ new Set(),
-			lastLocationResult: void 0
-		};
-		const mediaNodeIds = /* @__PURE__ */ new WeakMap();
-		let nextMediaNodeId = 1;
-		function debugLog(message, data) {
-			if (!runtime.debugEnabled) return;
-			if (data === void 0) console.debug(`[Telegram Media Continuity] ${message}`);
-			else console.debug(`[Telegram Media Continuity] ${message}`, data);
-		}
-		function isPlainObject(value) {
-			return Boolean(value && typeof value === "object" && !Array.isArray(value));
-		}
-		function isElementVisible(element) {
-			if (!(element instanceof Element) || !element.isConnected) return false;
-			const rect = element.getBoundingClientRect();
-			if (rect.width < 1 || rect.height < 1) return false;
-			const style = getComputedStyle(element);
-			return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && element.getAttribute("aria-hidden") !== "true" && !element.hasAttribute("hidden");
-		}
-		function getNumericDataAttributes(element) {
-			if (!(element instanceof Element)) return {};
-			const result = {};
-			for (const attributeName of PROBE_NUMERIC_ATTRIBUTES) {
-				const value = element.getAttribute(attributeName);
-				if (value && /^-?\d+$/.test(value)) result[attributeName] = value;
-			}
-			return result;
-		}
-		function describeElement(element) {
-			if (!(element instanceof Element)) return void 0;
-			const rect = element.getBoundingClientRect();
-			return {
-				tag: element.tagName.toLowerCase(),
-				classNames: Array.from(element.classList).slice(0, 12),
-				role: element.getAttribute("role") || "",
-				hasAriaLabel: element.hasAttribute("aria-label"),
-				hasTitle: element.hasAttribute("title"),
-				hasHref: element instanceof HTMLAnchorElement && element.hasAttribute("href"),
-				dataAttributeNames: Array.from(element.attributes).filter((attribute) => attribute.name.startsWith("data-")).slice(0, 16).map((attribute) => attribute.name),
-				numericDataAttributes: getNumericDataAttributes(element),
-				rect: {
-					width: Math.round(rect.width),
-					height: Math.round(rect.height),
-					left: Math.round(rect.left),
-					top: Math.round(rect.top)
-				},
-				imageCount: element.querySelectorAll("img").length,
-				videoCount: element.querySelectorAll("video").length,
-				buttonCount: element.querySelectorAll("button, [role=\"button\"]").length
-			};
-		}
-		function classifyUrlToken(value) {
-			if (!value) return "empty";
-			if (/^-?\d+$/.test(value)) return "number";
-			return "text";
-		}
-		function describeHrefPattern(element) {
-			if (!(element instanceof HTMLAnchorElement) || !element.hasAttribute("href")) return void 0;
-			try {
-				const url = new URL(element.href, location.href);
-				const hashPath = url.hash.split("?")[0].replace(/^#/, "");
-				return {
-					protocol: url.protocol,
-					host: [
-						"web.telegram.org",
-						"t.me",
-						"telegram.me"
-					].includes(url.hostname) ? url.hostname : "other",
-					pathPattern: url.pathname.split("/").filter(Boolean).slice(0, 8).map(classifyUrlToken),
-					hashPattern: hashPath.split("/").filter(Boolean).slice(0, 8).map(classifyUrlToken),
-					queryKeys: Array.from(url.searchParams.keys()).slice(0, 12),
-					hashQueryKeys: url.hash.includes("?") ? Array.from(new URLSearchParams(url.hash.slice(url.hash.indexOf("?") + 1)).keys()).slice(0, 12) : []
-				};
-			} catch (error) {
-				return { invalid: true };
-			}
-		}
-		function describeControl(element) {
-			const description = describeElement(element);
-			if (!description) return void 0;
-			return {
-				...description,
-				hasSvg: Boolean(element.querySelector("svg")),
-				hrefPattern: describeHrefPattern(element)
-			};
-		}
-		function findProbeMessageNode(target) {
-			let current = target instanceof Element ? target : void 0;
-			for (let depth = 0; current && depth < 14; depth += 1) {
-				if (PROBE_MESSAGE_ID_ATTRIBUTES.some((attributeName) => {
-					const value = current.getAttribute(attributeName);
-					return Boolean(value && /^-?\d+$/.test(value));
-				})) return current;
-				current = current.parentElement;
-			}
-		}
-		function getProbeIdentity(messageNode) {
-			if (!(messageNode instanceof Element)) return void 0;
-			let messageId = "";
-			let peerId = "";
-			for (const attributeName of PROBE_MESSAGE_ID_ATTRIBUTES) {
-				const value = messageNode.getAttribute(attributeName);
-				if (value && /^-?\d+$/.test(value)) {
-					messageId = value;
-					break;
-				}
-			}
-			for (const attributeName of PROBE_PEER_ID_ATTRIBUTES) {
-				const value = messageNode.getAttribute(attributeName);
-				if (value && /^-?\d+$/.test(value)) {
-					peerId = value;
-					break;
-				}
-			}
-			return messageId ? {
-				messageId,
-				peerId
-			} : void 0;
-		}
-		function findProbeMediaFromTarget(target, messageNode, point) {
-			if (!(target instanceof Element) || !(messageNode instanceof Element)) return void 0;
-			if (target.matches("img, video")) return target;
-			let current = target;
-			while (current && current !== messageNode) {
-				const media = current.querySelectorAll("img, video");
-				if (media.length === 1) return media[0];
-				current = current.parentElement;
-			}
-			const candidates = Array.from(messageNode.querySelectorAll("img, video")).filter((item) => {
-				const rect = item.getBoundingClientRect();
-				return rect.width >= 32 && rect.height >= 32;
-			});
-			if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
-				const hit = candidates.find((item) => {
-					const rect = item.getBoundingClientRect();
-					return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
-				});
-				if (hit) return hit;
-			}
-			return candidates.length === 1 ? candidates[0] : void 0;
-		}
-		function getProbeAlbumIndex(messageNode, media) {
-			if (!(messageNode instanceof Element) || !(media instanceof Element)) return 0;
-			const index = Array.from(messageNode.querySelectorAll("img, video")).filter((item) => {
-				const rect = item.getBoundingClientRect();
-				return rect.width >= 32 && rect.height >= 32;
-			}).indexOf(media);
-			return index >= 0 ? index : 0;
-		}
 		function captureSourceProbe(event) {
-			const target = event.target;
-			if (!(target instanceof Element) || target.closest(`#${SCRIPT_ID}`) || findMediaViewer()) return;
+			const captured = captureSourceTarget(event, SCRIPT_ID);
+			if (!captured) return;
 			clearLocationTimers();
 			runtime.activeLocationSequenceId += 1;
-			const messageNode = findProbeMessageNode(target);
-			const identity = getProbeIdentity(messageNode);
-			if (!messageNode || !identity) return;
-			const media = findProbeMediaFromTarget(target, messageNode, {
-				x: event.clientX,
-				y: event.clientY
-			});
-			if (!media) return;
-			const ancestorChain = [];
-			let current = target;
-			for (let depth = 0; current && current !== messageNode && depth < 6; depth += 1) {
-				ancestorChain.push(describeElement(current));
-				current = current.parentElement;
-			}
-			ancestorChain.push(describeElement(messageNode));
-			const capturedAt = Date.now();
-			const albumIndex = getProbeAlbumIndex(messageNode, media);
-			runtime.lastSourceProbe = {
-				capturedAt,
-				identity,
-				albumIndex,
-				mediaTag: media.tagName.toLowerCase(),
-				messageNode: describeElement(messageNode),
-				targetAncestors: ancestorChain.filter(Boolean)
-			};
-			runtime.lastSourceTarget = identity.peerId ? {
-				capturedAt,
-				peerKey: identity.peerId,
-				messageKey: identity.messageId,
-				albumIndex,
-				source: "source-message",
-				confidence: "high",
-				sourceMessageNode: messageNode
-			} : void 0;
-		}
-		function findScrollableAncestor(element) {
-			let current = element instanceof Element ? element.parentElement : void 0;
-			while (current && current !== document.body && current !== document.documentElement) {
-				const style = getComputedStyle(current);
-				if (/(auto|scroll|overlay)/.test(style.overflowY) && current.scrollHeight > current.clientHeight + 2) return current;
-				current = current.parentElement;
-			}
-		}
-		function cloneMediaTarget(target) {
-			if (!target) return void 0;
-			return {
-				capturedAt: target.capturedAt || Date.now(),
-				peerKey: String(target.peerKey || ""),
-				messageKey: String(target.messageKey || ""),
-				albumIndex: Number.isInteger(target.albumIndex) ? target.albumIndex : 0,
-				source: target.source || "source-message",
-				confidence: target.confidence || "high",
-				confirmedAt: target.confirmedAt || 0,
-				mediaFingerprint: target.mediaFingerprint || "",
-				sourceMessageNode: target.sourceMessageNode
-			};
+			if (!captured.probe) return;
+			runtime.lastSourceProbe = captured.probe;
+			runtime.lastSourceTarget = captured.target;
 		}
 		function takeRecentSourceTarget() {
 			const target = runtime.lastSourceTarget;
 			runtime.lastSourceTarget = void 0;
 			if (!target || Date.now() - target.capturedAt > SOURCE_TARGET_MAX_AGE_MS) return void 0;
 			if (!(target.sourceMessageNode instanceof Element) || !target.sourceMessageNode.isConnected) return void 0;
-			const identity = getProbeIdentity(target.sourceMessageNode);
+			const identity = getMessageIdentity(target.sourceMessageNode);
 			if (!identity || identity.messageId !== target.messageKey || identity.peerId !== target.peerKey) return void 0;
 			return cloneMediaTarget(target);
-		}
-		function isChatMediaNode(node) {
-			if (!(node instanceof Element) || node.classList.contains("pinned-message")) return false;
-			if (!getProbeIdentity(node)?.peerId || !node.closest(CHAT_SCROLL_SELECTOR)) return false;
-			if (node.classList.contains("album-item")) return true;
-			if (!node.classList.contains("bubble")) return false;
-			if (node.querySelector(":scope .album-item[data-mid][data-peer-id]")) return false;
-			return node.classList.contains("photo") || node.classList.contains("video") || node.classList.contains("is-gif") || node.classList.contains("document");
-		}
-		function getAlbumItemIndex(node) {
-			if (!(node instanceof Element) || !node.classList.contains("album-item")) return 0;
-			const parent = node.parentElement;
-			if (!parent) return 0;
-			const index = Array.from(parent.children).filter((item) => item.classList?.contains("album-item")).indexOf(node);
-			return index >= 0 ? index : 0;
-		}
-		function createTargetFromMessageNode(node) {
-			const identity = getProbeIdentity(node);
-			if (!identity?.messageId || !identity.peerId) return void 0;
-			return {
-				capturedAt: Date.now(),
-				peerKey: identity.peerId,
-				messageKey: identity.messageId,
-				albumIndex: getAlbumItemIndex(node),
-				source: "source-message",
-				confidence: "high",
-				confirmedAt: 0,
-				mediaFingerprint: "",
-				sourceMessageNode: node
-			};
-		}
-		function collectOrderedChatMediaTargets(peerKey) {
-			const container = findActiveChatScrollContainer();
-			if (!container || !peerKey) return [];
-			const nodes = Array.from(container.querySelectorAll("[data-mid][data-peer-id]")).filter((node) => isChatMediaNode(node) && getProbeIdentity(node)?.peerId === peerKey);
-			nodes.sort((left, right) => {
-				if (left === right) return 0;
-				return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
-			});
-			return nodes.map(createTargetFromMessageNode).filter(Boolean);
-		}
-		function findTargetIndex(targets, target) {
-			if (!target) return -1;
-			const nodeIndex = targets.findIndex((candidate) => candidate.sourceMessageNode === target.sourceMessageNode);
-			if (nodeIndex >= 0) return nodeIndex;
-			return targets.findIndex((candidate) => candidate.peerKey === target.peerKey && candidate.messageKey === target.messageKey);
-		}
-		function findAdjacentMediaTarget(target, direction) {
-			if (!target || !direction) return void 0;
-			const targets = collectOrderedChatMediaTargets(target.peerKey);
-			const index = findTargetIndex(targets, target);
-			if (index < 0) return void 0;
-			return cloneMediaTarget(targets[index + (direction > 0 ? 1 : -1)]);
-		}
-		function isMediaSuccessfullyDisplayed(media) {
-			if (!isElementVisible(media)) return false;
-			if (media instanceof HTMLImageElement) return media.complete && media.naturalWidth > 0;
-			if (media instanceof HTMLVideoElement) return media.readyState >= HTMLMediaElement.HAVE_METADATA || media.videoWidth > 0 || media.videoHeight > 0;
-			return false;
-		}
-		function findActiveChatScrollContainer() {
-			const candidates = Array.from(document.querySelectorAll(CHAT_SCROLL_SELECTOR)).filter(isElementVisible);
-			candidates.sort((left, right) => {
-				const leftRect = left.getBoundingClientRect();
-				const rightRect = right.getBoundingClientRect();
-				return rightRect.width * rightRect.height - leftRect.width * leftRect.height;
-			});
-			return candidates[0];
-		}
-		function getActiveChatPeerKey(container) {
-			if (!(container instanceof Element)) return "";
-			const counts = /* @__PURE__ */ new Map();
-			for (const node of container.querySelectorAll("[data-mid][data-peer-id]")) {
-				const identity = getProbeIdentity(node);
-				if (!identity?.peerId || node.classList.contains("pinned-message")) continue;
-				counts.set(identity.peerId, (counts.get(identity.peerId) || 0) + 1);
-			}
-			let bestKey = "";
-			let bestCount = 0;
-			for (const [peerKey, count] of counts) if (count > bestCount) {
-				bestKey = peerKey;
-				bestCount = count;
-			}
-			return bestKey;
-		}
-		function findExactMessageNode(target) {
-			const container = findActiveChatScrollContainer();
-			if (!container || !target?.messageKey) return { reason: "chat-not-ready" };
-			const activePeerKey = getActiveChatPeerKey(container);
-			if (target.peerKey && activePeerKey && target.peerKey !== activePeerKey) return {
-				reason: "peer-changed",
-				container
-			};
-			const sourceNode = target.sourceMessageNode;
-			if (sourceNode instanceof Element && sourceNode.isConnected && container.contains(sourceNode)) {
-				const identity = getProbeIdentity(sourceNode);
-				if (identity?.messageId === target.messageKey && (!target.peerKey || identity.peerId === target.peerKey)) return {
-					node: sourceNode.classList.contains("album-item") ? sourceNode.closest(".bubble") || sourceNode : sourceNode,
-					container,
-					reason: "source-node"
-				};
-			}
-			const escapedMessageKey = globalThis.CSS?.escape ? CSS.escape(target.messageKey) : target.messageKey.replace(/[^-\d]/g, "");
-			const matches = Array.from(container.querySelectorAll(`[data-mid="${escapedMessageKey}"]`)).filter((node) => {
-				const identity = getProbeIdentity(node);
-				return identity?.messageId === target.messageKey && (!target.peerKey || identity.peerId === target.peerKey) && !node.classList.contains("pinned-message");
-			});
-			const identityNode = matches.find((node) => node.classList.contains("album-item")) || matches.find((node) => node.classList.contains("bubble")) || matches[0];
-			const displayNode = identityNode?.classList.contains("album-item") ? identityNode.closest(".bubble") || identityNode : identityNode;
-			return displayNode ? {
-				node: displayNode,
-				container,
-				reason: "exact-dom-match"
-			} : {
-				container,
-				reason: "not-loaded"
-			};
 		}
 		function ensureLocationStyle() {
 			if (document.getElementById(LOCATION_STYLE_ID)) return;
@@ -538,18 +778,6 @@
 			};
 			requestAnimationFrame(() => requestAnimationFrame(poll));
 		}
-		function collectProbeMessageNodes() {
-			const selector = PROBE_MESSAGE_ID_ATTRIBUTES.map((name) => `[${name}]`).join(", ");
-			const nodes = [];
-			const seen = /* @__PURE__ */ new Set();
-			for (const element of document.querySelectorAll(selector)) {
-				if (!getProbeIdentity(element) || seen.has(element)) continue;
-				seen.add(element);
-				nodes.push(element);
-				if (nodes.length >= 600) break;
-			}
-			return nodes;
-		}
 		function collectScrollSnapshots(messageNodes) {
 			const snapshots = [];
 			const seen = /* @__PURE__ */ new Set();
@@ -578,17 +806,17 @@
 			}));
 		}
 		function collectChatProbe() {
-			const messageNodes = collectProbeMessageNodes();
+			const messageNodes = collectMessageNodes();
 			const visibleNodes = messageNodes.filter(isElementVisible);
 			const sample = visibleNodes.slice(0, 12).map((element) => ({
-				identity: getProbeIdentity(element),
+				identity: getMessageIdentity(element),
 				element: describeElement(element)
 			}));
 			const scrollSnapshots = collectScrollSnapshots(messageNodes);
 			return {
 				messageNodeCount: messageNodes.length,
 				visibleMessageNodeCount: visibleNodes.length,
-				messageNodesWithPeerId: messageNodes.filter((element) => getProbeIdentity(element)?.peerId).length,
+				messageNodesWithPeerId: messageNodes.filter((element) => getMessageIdentity(element)?.peerId).length,
 				sample,
 				scrollContainers: describeScrollSnapshots(scrollSnapshots)
 			};
@@ -654,9 +882,8 @@
 			return result;
 		}
 		function clearCloseProbe() {
-			if (runtime.closeProbeTimer) window.clearTimeout(runtime.closeProbeTimer);
-			runtime.closeProbeTimer = 0;
-			for (const cleanup of runtime.closeProbeCleanup.splice(0)) cleanup();
+			runtime.closeProbeTimer = clearTimeoutId(runtime.closeProbeTimer);
+			runCleanupList(runtime.closeProbeCleanup);
 			runtime.closeProbeInternal = void 0;
 		}
 		function compareScrollSnapshots(before, after) {
@@ -677,7 +904,7 @@
 		function finalizeCloseProbe(status, viewerClosedAt) {
 			const internal = runtime.closeProbeInternal;
 			if (!internal) return runtime.closeProbe;
-			const messageNodes = collectProbeMessageNodes();
+			const messageNodes = collectMessageNodes();
 			const afterScrolls = collectScrollSnapshots(messageNodes);
 			const now = performance.now();
 			runtime.closeProbe = {
@@ -710,7 +937,7 @@
 				console.warn("[Telegram Media Continuity] 未发现可见媒体查看器");
 				return runtime.closeProbe;
 			}
-			const messageNodes = collectProbeMessageNodes();
+			const messageNodes = collectMessageNodes();
 			const beforeScrolls = collectScrollSnapshots(messageNodes);
 			const startedAt = performance.now();
 			runtime.closeProbe = {
@@ -776,119 +1003,6 @@
 			runtime.closeProbeTimer = window.setTimeout(poll, CLOSE_PROBE_POLL_MS);
 			console.info("[Telegram Media Continuity] 关闭流程探测已布防，请手动点击官方关闭按钮或按 Esc");
 			return runtime.closeProbe;
-		}
-		function validateSettings(value) {
-			const source = isPlainObject(value) ? value : {};
-			return {
-				continuousEnabled: typeof source.continuousEnabled === "boolean" ? source.continuousEnabled : DEFAULT_SETTINGS.continuousEnabled,
-				photoDurationMs: DURATIONS.includes(source.photoDurationMs) ? source.photoDurationMs : DEFAULT_SETTINGS.photoDurationMs,
-				panelCollapsed: typeof source.panelCollapsed === "boolean" ? source.panelCollapsed : DEFAULT_SETTINGS.panelCollapsed
-			};
-		}
-		function loadSettings() {
-			try {
-				const raw = localStorage.getItem(STORAGE_KEY);
-				if (!raw) return { ...DEFAULT_SETTINGS };
-				const parsed = JSON.parse(raw);
-				if (isPlainObject(parsed) && isPlainObject(parsed.settings)) return validateSettings(parsed.settings);
-				return validateSettings(parsed);
-			} catch (error) {
-				debugLog("读取本地设置失败", error);
-				return { ...DEFAULT_SETTINGS };
-			}
-		}
-		function saveSettings(settings) {
-			try {
-				const raw = localStorage.getItem(STORAGE_KEY);
-				const parsed = raw ? JSON.parse(raw) : {};
-				const nextState = isPlainObject(parsed) ? parsed : {};
-				nextState.settings = validateSettings(settings);
-				localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
-				return nextState.settings;
-			} catch (error) {
-				debugLog("写入本地设置失败", error);
-				return validateSettings(settings);
-			}
-		}
-		function updateSettings(current, patch) {
-			return saveSettings({
-				...current,
-				...patch
-			});
-		}
-		function findMediaViewer() {
-			const viewer = document.querySelector(".media-viewer-whole");
-			return isElementVisible(viewer) ? viewer : void 0;
-		}
-		function findMediaRoot(viewer) {
-			return viewer.querySelector(".media-viewer-movers") || viewer;
-		}
-		function getNavigationButton(viewer, direction) {
-			const selector = direction > 0 ? ".media-viewer-switcher-right" : ".media-viewer-switcher-left";
-			const button = viewer.querySelector(selector);
-			if (!isElementVisible(button)) return void 0;
-			if (button.classList.contains("hide")) return void 0;
-			return button;
-		}
-		function navigationAvailability(viewer) {
-			return {
-				previous: Boolean(getNavigationButton(viewer, -1)),
-				next: Boolean(getNavigationButton(viewer, 1))
-			};
-		}
-		function mediaScore(media, rootRect) {
-			if (!isElementVisible(media)) return -Infinity;
-			const rect = media.getBoundingClientRect();
-			if (rect.width < 80 || rect.height < 60) return -Infinity;
-			const rootCenterX = rootRect.left + rootRect.width / 2;
-			const rootCenterY = rootRect.top + rootRect.height / 2;
-			const mediaCenterX = rect.left + rect.width / 2;
-			const mediaCenterY = rect.top + rect.height / 2;
-			const distance = Math.hypot(mediaCenterX - rootCenterX, mediaCenterY - rootCenterY);
-			let score = Math.min(rect.width * rect.height / 1e3, 1200) - distance;
-			if (media instanceof HTMLVideoElement && !media.paused) score += 300;
-			if (rect.left <= rootCenterX && rect.right >= rootCenterX && rect.top <= rootCenterY && rect.bottom >= rootCenterY) score += 500;
-			return score;
-		}
-		function findActiveMedia(viewer) {
-			const root = findMediaRoot(viewer);
-			const rootRect = root.getBoundingClientRect();
-			let best;
-			let bestScore = -Infinity;
-			for (const media of root.querySelectorAll("img, video")) {
-				const score = mediaScore(media, rootRect);
-				if (score > bestScore) {
-					bestScore = score;
-					best = media;
-				}
-			}
-			return best;
-		}
-		function getMediaNodeId(media) {
-			if (!mediaNodeIds.has(media)) {
-				mediaNodeIds.set(media, nextMediaNodeId);
-				nextMediaNodeId += 1;
-			}
-			return mediaNodeIds.get(media);
-		}
-		function mediaFingerprint(media) {
-			if (!media) return "none";
-			const source = media.currentSrc || media.src || "";
-			const size = media instanceof HTMLVideoElement ? `${media.videoWidth}x${media.videoHeight}` : `${media.naturalWidth}x${media.naturalHeight}`;
-			return `${media.tagName}|${getMediaNodeId(media)}|${size}|${source.slice(-120)}`;
-		}
-		function isMediaZoomed(viewer) {
-			return viewer.classList.contains("is-zooming");
-		}
-		function dispatchNavigation(viewer, direction) {
-			const button = getNavigationButton(viewer, direction);
-			if (!button) return false;
-			debugLog("触发 Web K 官方方向控件", {
-				direction,
-				button: describeElement(button)
-			});
-			button.click();
-			return true;
 		}
 		class ControlPanel {
 			constructor(session) {
@@ -1068,10 +1182,8 @@
 				window.addEventListener("pointerup", this.handlePointerUp, true);
 				window.addEventListener("pointercancel", this.handlePointerUp, true);
 				this.handleViewerPointerDown = (event) => {
-					if (!(event.target instanceof Element)) return;
-					const button = event.target.closest(".media-viewer-switcher-left, .media-viewer-switcher-right");
-					if (!button || !this.viewer.contains(button)) return;
-					this.prepareNavigationTarget(button.classList.contains("media-viewer-switcher-right") ? 1 : -1);
+					const direction = getNavigationDirectionFromTarget(this.viewer, event.target);
+					if (direction) this.prepareNavigationTarget(direction);
 				};
 				this.handleViewerKeyDown = (event) => {
 					if (event.repeat || !isElementVisible(this.viewer)) return;
@@ -1184,8 +1296,7 @@
 				this.currentFingerprint = nextFingerprint;
 				this.isNavigating = false;
 				const add = (target, type, listener, options) => {
-					target.addEventListener(type, listener, options);
-					this.mediaCleanup.push(() => target.removeEventListener(type, listener, options));
+					addEventListenerCleanup(this.mediaCleanup, target, type, listener, options);
 				};
 				add(media, "pointerenter", () => {
 					this.hovered = true;
@@ -1238,13 +1349,11 @@
 				this.scheduleForCurrentMedia(true);
 			}
 			releaseMediaListeners() {
-				for (const cleanup of this.mediaCleanup.splice(0)) cleanup();
+				runCleanupList(this.mediaCleanup);
 			}
 			clearTimer() {
-				if (this.timerId) window.clearTimeout(this.timerId);
-				if (this.countdownId) window.clearInterval(this.countdownId);
-				this.timerId = 0;
-				this.countdownId = 0;
+				this.timerId = clearTimeoutId(this.timerId);
+				this.countdownId = clearIntervalId(this.countdownId);
 			}
 			canRunPhotoTimer() {
 				return this.active && !this.paused && this.currentMedia instanceof HTMLImageElement && this.currentMedia.complete && this.currentMedia.naturalWidth > 0 && !document.hidden && document.hasFocus() && !this.hovered && !this.interacting && !this.isZoomed;
@@ -1361,11 +1470,11 @@
 				if (this.destroyed) return;
 				this.destroyed = true;
 				this.clearTimer();
-				window.clearTimeout(this.refreshTimer);
-				window.clearTimeout(this.interactionTimer);
-				window.clearTimeout(this.pendingNavigationTimer);
+				clearTimeoutId(this.refreshTimer);
+				clearTimeoutId(this.interactionTimer);
+				clearTimeoutId(this.pendingNavigationTimer);
 				this.releaseMediaListeners();
-				this.observer.disconnect();
+				disconnectObserver(this.observer);
 				document.removeEventListener("visibilitychange", this.handleVisibilityChange);
 				window.removeEventListener("focus", this.handleFocusChange);
 				window.removeEventListener("blur", this.handleFocusChange);
@@ -1377,30 +1486,7 @@
 				debugLog("Web K 媒体查看器会话结束");
 			}
 		}
-		function scanPage() {
-			runtime.scanTimer = 0;
-			if (runtime.session && (!runtime.session.viewer.isConnected || !isElementVisible(runtime.session.viewer))) {
-				const closeSnapshot = runtime.session.createCloseSnapshot();
-				runtime.session.destroy();
-				runtime.session = void 0;
-				locateMessageAfterClose(closeSnapshot);
-			}
-			const viewer = findMediaViewer();
-			if (!viewer) return;
-			if (runtime.session && runtime.session.viewer === viewer) {
-				runtime.session.requestRefresh();
-				return;
-			}
-			if (runtime.session) runtime.session.destroy();
-			clearLocationTimers();
-			runtime.activeLocationSequenceId += 1;
-			runtime.session = new ViewerSession(viewer);
-		}
-		function scheduleScan() {
-			if (runtime.scanTimer) return;
-			runtime.scanTimer = window.setTimeout(scanPage, SCAN_DELAY_MS);
-		}
-		function installDebugApi() {
+		function installDebugApi(scheduleScan) {
 			const api = Object.freeze({
 				inspect() {
 					const viewer = findMediaViewer();
@@ -1490,35 +1576,16 @@
 				value: api
 			});
 		}
-		function initializeScript() {
-			const marker = "web-k-ready";
-			if (document.documentElement.dataset.telegramMediaContinuity === marker) return;
-			document.documentElement.dataset.telegramMediaContinuity = marker;
-			runtime.debugEnabled = /(?:[?#&])ttMediaDebug=1(?:&|$)/.test(location.href);
-			installDebugApi();
-			document.addEventListener("pointerdown", captureSourceProbe, true);
-			runtime.observer = new MutationObserver(scheduleScan);
-			runtime.observer.observe(document.body || document.documentElement, {
-				childList: true,
-				subtree: true
-			});
-			runtime.periodicTimer = window.setInterval(() => {
-				if (runtime.session) runtime.session.requestRefresh();
-				else scheduleScan();
-			}, 1e3);
-			window.addEventListener("pagehide", () => {
-				clearCloseProbe();
-				clearLocationTimers();
-				runtime.activeLocationSequenceId += 1;
-				document.removeEventListener("pointerdown", captureSourceProbe, true);
-				runtime.session?.destroy();
-			});
-			window.addEventListener("popstate", scheduleScan);
-			window.addEventListener("hashchange", scheduleScan);
-			scheduleScan();
-			console.info("[Telegram Media Continuity] Web K script initialized");
-		}
-		initializeScript();
+		createLifecycle({
+			captureSourceTarget: captureSourceProbe,
+			clearCloseProbe,
+			clearLocationTimers,
+			createSession: (viewer) => new ViewerSession(viewer),
+			findMediaViewer,
+			installDebugApi,
+			isElementVisible,
+			locateMessageAfterClose
+		}).initializeScript();
 	})();
 	//#endregion
 })();
