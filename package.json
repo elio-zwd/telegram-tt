@@ -15,6 +15,8 @@
     "build:production": "vite build",
     "build:stats": "cross-env BUNDLE_STATS=1 vite build",
     "build:stats:visualizer": "cross-env BUNDLE_STATS_VISUALIZER=1 vite build",
+    "build:tampermonkey:web-k": "vite build --config tampermonkey/build/vite.web-k-userscript.config.js",
+    "check:tampermonkey:web-k": "node tampermonkey/build/verify-web-k-userscript.mjs",
     "web:release:production": "npm i && npm run build:production && git add -A && git commit -a -m '[Build]' --no-verify && git push",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

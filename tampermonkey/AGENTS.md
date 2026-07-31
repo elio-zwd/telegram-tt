@@ -152,3 +152,22 @@ git rev-parse HEAD
 - PR 描述至少包含背景与目标、实现方式、修改文件、构建结果、验证情况、未验证项、风险、回滚和本地验收步骤。
 - 功能尚未完成或真实浏览器尚未验收时保持 Draft。
 - 完成前重新审查差异，确认未修改 Web A 脚本和桌面源码。
+
+## 14. PR-M1 当前构建基座
+
+在 PR-M1 合并前，Web K 源码关系固定为：
+
+```text
+version.js
+→ entry.js
+→ legacy-main.js
+→ vite.web-k-userscript.config.js
+→ telegram-media-continuity-web-k.user.js
+```
+
+- `tampermonkey/src/web-k/version.js` 是版本唯一来源。
+- `tampermonkey/src/web-k/legacy-main.js` 必须保持稳定脚本 Blob `bff54d20036894a2e4a17655856a6325f66a6748`；M1 不在该文件内拆模块、重命名或优化逻辑。
+- 构建配置只允许剥离 legacy metadata，并把调试 API 版本连接到版本模块；不得改变选择器、监听参数、timeout、poll、sequenceId、storage key、控制条或关闭定位时序。
+- `tampermonkey/telegram-media-continuity-web-k.user.js` 只允许由 `npm run build:tampermonkey:web-k` 生成，不得作为最终修复直接手工编辑。
+- `npm run check:tampermonkey:web-k` 必须验证 metadata、Web K `@match`、版本、单文件 IIFE、动态 import、额外产物和 legacy Blob。
+- 连续构建两次的生成结果必须一致；真实浏览器回归完成前 PR 保持 Draft。
