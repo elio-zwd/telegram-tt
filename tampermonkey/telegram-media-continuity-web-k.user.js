@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web K 媒体续播（兼容验证版）
 // @namespace    telegram-air/media-continuity
-// @version      0.4.0-k5
+// @version      0.4.0-k6
 // @description  为 Telegram Web K 提供图片和视频连续浏览能力
 // @match        https://web.telegram.org/k/*
 // @run-at       document-idle
@@ -768,9 +768,11 @@
 		15e3,
 		3e4
 	];
+	var BROWSE_DIRECTIONS = Object.freeze(["forward", "backward"]);
 	var DEFAULT_SETTINGS = Object.freeze({
 		continuousEnabled: false,
 		photoDurationMs: 5e3,
+		browseDirection: "forward",
 		panelCollapsed: false
 	});
 	function isPlainObject(value) {
@@ -781,6 +783,7 @@
 		return {
 			continuousEnabled: typeof source.continuousEnabled === "boolean" ? source.continuousEnabled : DEFAULT_SETTINGS.continuousEnabled,
 			photoDurationMs: DURATIONS.includes(source.photoDurationMs) ? source.photoDurationMs : DEFAULT_SETTINGS.photoDurationMs,
+			browseDirection: BROWSE_DIRECTIONS.includes(source.browseDirection) ? source.browseDirection : DEFAULT_SETTINGS.browseDirection,
 			panelCollapsed: typeof source.panelCollapsed === "boolean" ? source.panelCollapsed : DEFAULT_SETTINGS.panelCollapsed
 		};
 	}
@@ -797,16 +800,22 @@
 		}
 	}
 	function saveSettings(settings) {
+		const validatedSettings = validateSettings(settings);
 		try {
 			const raw = localStorage.getItem(STORAGE_KEY);
-			const parsed = raw ? JSON.parse(raw) : {};
-			const nextState = isPlainObject(parsed) ? parsed : {};
-			nextState.settings = validateSettings(settings);
+			let nextState = {};
+			if (raw) try {
+				const parsed = JSON.parse(raw);
+				if (isPlainObject(parsed)) nextState = parsed;
+			} catch (error) {
+				debugLog("修复损坏的本地设置", error);
+			}
+			nextState.settings = validatedSettings;
 			localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
 			return nextState.settings;
 		} catch (error) {
 			debugLog("写入本地设置失败", error);
-			return validateSettings(settings);
+			return validatedSettings;
 		}
 	}
 	function updateSettings(current, patch) {
@@ -881,6 +890,7 @@
 				onTogglePause: () => this.togglePause(),
 				onNavigate: (direction, automatic) => this.navigate(direction, automatic),
 				onSetPhotoDuration: (duration) => this.setPhotoDuration(duration),
+				onSetBrowseDirection: (direction) => this.setBrowseDirection(direction),
 				onSetPanelCollapsed: (collapsed) => this.setPanelCollapsed(collapsed)
 			});
 			this.observer = new MutationObserver(() => this.requestRefresh());
@@ -931,9 +941,13 @@
 				paused: this.paused,
 				collapsed: this.settings.panelCollapsed,
 				photoDurationMs: this.settings.photoDurationMs,
+				browseDirection: this.settings.browseDirection,
 				canPrevious: availability.previous,
 				canNext: availability.next
 			};
+		}
+		getAutomaticDirection() {
+			return this.settings.browseDirection === "backward" ? -1 : 1;
 		}
 		requestRefresh() {
 			if (this.destroyed || this.refreshTimer) return;
@@ -1020,7 +1034,7 @@
 				add(media, "canplay", confirmVideo);
 				add(media, "playing", confirmVideo);
 				add(media, "ended", () => {
-					if (this.active && !this.paused) this.navigate(1, true);
+					if (this.active && !this.paused) this.navigate(this.getAutomaticDirection(), true);
 				});
 				add(media, "error", () => {
 					this.clearPendingNavigation();
@@ -1044,6 +1058,8 @@
 		scheduleForCurrentMedia(forceRestart = false) {
 			if (this.destroyed || !this.currentMedia) return;
 			if (forceRestart) this.clearTimer();
+			const automaticDirection = this.getAutomaticDirection();
+			const automaticDirectionLabel = automaticDirection > 0 ? "下一项" : "上一项";
 			if (this.currentMedia instanceof HTMLVideoElement) {
 				this.clearTimer();
 				if (!this.active) return this.panel.setStatus("连续浏览已关闭");
@@ -1052,7 +1068,7 @@
 				if (this.currentMedia.paused && !this.currentMedia.ended) {
 					const playPromise = this.currentMedia.play();
 					if (playPromise && typeof playPromise.catch === "function") playPromise.catch(() => this.panel.setStatus("点击视频开始播放"));
-				} else this.panel.setStatus("视频结束后自动切换");
+				} else this.panel.setStatus(`视频结束后自动切换${automaticDirectionLabel}`);
 				return;
 			}
 			if (!(this.currentMedia instanceof HTMLImageElement)) {
@@ -1069,13 +1085,13 @@
 			const startedAt = Date.now();
 			const updateCountdown = () => {
 				const remaining = Math.max(0, duration - (Date.now() - startedAt));
-				this.panel.setStatus(`图片 ${(remaining / 1e3).toFixed(1)} 秒后切换`);
+				this.panel.setStatus(`图片 ${(remaining / 1e3).toFixed(1)} 秒后切换${automaticDirectionLabel}`);
 			};
 			updateCountdown();
 			this.countdownId = window.setInterval(updateCountdown, COUNTDOWN_REFRESH_MS);
 			this.timerId = window.setTimeout(() => {
 				this.clearTimer();
-				this.navigate(1, true);
+				this.navigate(automaticDirection, true);
 			}, duration);
 		}
 		toggleContinuous() {
@@ -1096,6 +1112,11 @@
 			this.panel.render(this.viewState());
 			this.scheduleForCurrentMedia(true);
 		}
+		setBrowseDirection(direction) {
+			this.settings = updateSettings(this.settings, { browseDirection: direction });
+			this.panel.render(this.viewState());
+			this.scheduleForCurrentMedia(true);
+		}
 		setPanelCollapsed(collapsed) {
 			this.settings = updateSettings(this.settings, { panelCollapsed: collapsed });
 			this.panel.render(this.viewState());
@@ -1104,7 +1125,7 @@
 			if (this.destroyed || this.isNavigating) return;
 			if (automatic && (!this.active || this.paused)) return;
 			if (!getNavigationButton(this.viewer, direction)) {
-				if (automatic) this.finish("已到当前媒体末尾");
+				if (automatic) this.finish(direction > 0 ? "已到当前媒体末尾" : "已到当前媒体开头");
 				else this.panel.setStatus(direction > 0 ? "没有可用的下一项" : "没有可用的上一项");
 				this.panel.render(this.viewState());
 				return;
@@ -1176,8 +1197,12 @@
 	}
 	//#endregion
 	//#region tampermonkey/src/web-k/features/control-panel/control-panel.js
+	var BROWSE_DIRECTION_LABELS = Object.freeze({
+		forward: "正向",
+		backward: "反向"
+	});
 	var ControlPanel = class {
-		constructor({ hostId, onToggleContinuous, onTogglePause, onNavigate, onSetPhotoDuration, onSetPanelCollapsed }) {
+		constructor({ hostId, onToggleContinuous, onTogglePause, onNavigate, onSetPhotoDuration, onSetBrowseDirection, onSetPanelCollapsed }) {
 			this.host = document.createElement("div");
 			this.host.id = hostId;
 			this.host.style.cssText = "position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:2147483646;pointer-events:none;";
@@ -1195,8 +1220,10 @@
         .panel {
           display: flex;
           align-items: center;
+          justify-content: center;
+          flex-wrap: wrap;
           gap: 7px;
-          max-width: min(94vw, 920px);
+          max-width: min(94vw, 960px);
           min-height: 46px;
           padding: 7px 9px;
           border: 1px solid rgba(255,255,255,.18);
@@ -1243,6 +1270,7 @@
         @media (max-width: 720px) {
           .panel { gap: 5px; padding: 6px; }
           button { padding: 0 8px; }
+          select { padding: 0 6px; }
           .status { min-width: 72px; max-width: 120px; }
         }
       </style>
@@ -1251,6 +1279,9 @@
         <button id="pause" type="button">暂停</button>
         <button id="previous" type="button" aria-label="上一项">←</button>
         <button id="next" type="button" aria-label="下一项">→</button>
+        <select id="direction" aria-label="自动浏览方向">
+          ${BROWSE_DIRECTIONS.map((value) => `<option value="${value}">${BROWSE_DIRECTION_LABELS[value]}</option>`).join("")}
+        </select>
         <select id="duration" aria-label="图片停留时间">
           ${DURATIONS.map((value) => `<option value="${value}">${value / 1e3} 秒</option>`).join("")}
         </select>
@@ -1267,6 +1298,7 @@
 			this.previous = this.shadow.querySelector("#previous");
 			this.next = this.shadow.querySelector("#next");
 			this.status = this.shadow.querySelector("#status");
+			this.direction = this.shadow.querySelector("#direction");
 			this.duration = this.shadow.querySelector("#duration");
 			for (const type of [
 				"pointerdown",
@@ -1279,6 +1311,7 @@
 			this.pause.addEventListener("click", onTogglePause);
 			this.previous.addEventListener("click", () => onNavigate(-1, false));
 			this.next.addEventListener("click", () => onNavigate(1, false));
+			this.direction.addEventListener("change", () => onSetBrowseDirection(this.direction.value));
 			this.duration.addEventListener("change", () => onSetPhotoDuration(Number(this.duration.value)));
 			this.shadow.querySelector("#collapse").addEventListener("click", () => onSetPanelCollapsed(true));
 			this.launcher.addEventListener("click", () => onSetPanelCollapsed(false));
@@ -1290,6 +1323,7 @@
 			this.pause.disabled = !state.active;
 			this.previous.disabled = !state.canPrevious;
 			this.next.disabled = !state.canNext;
+			this.direction.value = state.browseDirection;
 			this.duration.value = String(state.photoDurationMs);
 			this.panel.hidden = state.collapsed;
 			this.launcher.hidden = !state.collapsed;
@@ -1309,7 +1343,7 @@
 	}
 	//#endregion
 	//#region tampermonkey/src/web-k/version.js
-	var WEB_K_VERSION = "0.4.0-k5";
+	var WEB_K_VERSION = "0.4.0-k6";
 	//#endregion
 	//#region tampermonkey/src/web-k/features/debug/debug-api.js
 	function describeLastConfirmedTarget() {
