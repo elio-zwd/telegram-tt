@@ -38,6 +38,9 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: 更新 M3 文档（一次性）
+        run: node tampermonkey/build/update-m3-docs-once.mjs
+
       - name: 连续构建两次并比较输出
         shell: bash
         run: |
@@ -118,7 +121,7 @@ jobs:
           path: tampermonkey/telegram-media-continuity-web-k.user.js
           if-no-files-found: error
 
-      - name: 提交生成 userscript（一次性）
+      - name: 提交 M3 文档（一次性）
         if: github.event_name == 'pull_request'
         shell: bash
         env:
@@ -127,12 +130,18 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tampermonkey/telegram-media-continuity-web-k.user.js
+          git add \
+            tampermonkey/telegram-media-continuity-web-k.user.js \
+            tampermonkey/src/web-k/AGENTS.md \
+            tampermonkey/README.md \
+            docs/tampermonkey-web-k-feature-modules-m3.md \
+            docs/tampermonkey-plugin-migration-matrix.md \
+            docs/tampermonkey-web-k-plugin-priority-roadmap.md
           if git diff --cached --quiet; then
-            echo "生成文件已是最新状态"
+            echo "M3 文档和生成文件已是最新状态"
             exit 0
           fi
-          git commit -m "build: 更新 Web K userscript 生成产物"
+          git commit -m "docs: 完成 Web K 功能模块交接"
           git push origin "HEAD:${HEAD_BRANCH}"
 
       - name: 确认生成文件已提交
