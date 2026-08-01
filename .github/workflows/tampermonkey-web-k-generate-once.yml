@@ -1,6 +1,11 @@
 name: Web K userscript one-time generation
 
 on:
+  pull_request:
+    types:
+      - synchronize
+    branches:
+      - codex/tampermonkey-media-continuity
   push:
     branches:
       - refactor/tampermonkey-web-k-feature-modules
