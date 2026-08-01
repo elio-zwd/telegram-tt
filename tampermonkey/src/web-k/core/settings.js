@@ -3,10 +3,12 @@ import { debugLog } from './logger.js';
 const STORAGE_KEY = 'tt.mediaContinuity.v1';
 
 export const DURATIONS = [2000, 3000, 5000, 8000, 10000, 15000, 30000];
+export const BROWSE_DIRECTIONS = Object.freeze(['forward', 'backward']);
 
 const DEFAULT_SETTINGS = Object.freeze({
   continuousEnabled: false,
   photoDurationMs: 5000,
+  browseDirection: 'forward',
   panelCollapsed: false,
 });
 
@@ -23,6 +25,9 @@ export function validateSettings(value) {
     photoDurationMs: DURATIONS.includes(source.photoDurationMs)
       ? source.photoDurationMs
       : DEFAULT_SETTINGS.photoDurationMs,
+    browseDirection: BROWSE_DIRECTIONS.includes(source.browseDirection)
+      ? source.browseDirection
+      : DEFAULT_SETTINGS.browseDirection,
     panelCollapsed: typeof source.panelCollapsed === 'boolean'
       ? source.panelCollapsed
       : DEFAULT_SETTINGS.panelCollapsed,
@@ -45,16 +50,24 @@ export function loadSettings() {
 }
 
 export function saveSettings(settings) {
+  const validatedSettings = validateSettings(settings);
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    const nextState = isPlainObject(parsed) ? parsed : {};
-    nextState.settings = validateSettings(settings);
+    let nextState = {};
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (isPlainObject(parsed)) nextState = parsed;
+      } catch (error) {
+        debugLog('修复损坏的本地设置', error);
+      }
+    }
+    nextState.settings = validatedSettings;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
     return nextState.settings;
   } catch (error) {
     debugLog('写入本地设置失败', error);
-    return validateSettings(settings);
+    return validatedSettings;
   }
 }
 

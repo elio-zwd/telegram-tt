@@ -1,4 +1,9 @@
-import { DURATIONS } from '../../core/settings.js';
+import { BROWSE_DIRECTIONS, DURATIONS } from '../../core/settings.js';
+
+const BROWSE_DIRECTION_LABELS = Object.freeze({
+  forward: '正向',
+  backward: '反向',
+});
 
 export class ControlPanel {
   constructor({
@@ -7,6 +12,7 @@ export class ControlPanel {
     onTogglePause,
     onNavigate,
     onSetPhotoDuration,
+    onSetBrowseDirection,
     onSetPanelCollapsed,
   }) {
     this.host = document.createElement('div');
@@ -26,8 +32,10 @@ export class ControlPanel {
         .panel {
           display: flex;
           align-items: center;
+          justify-content: center;
+          flex-wrap: wrap;
           gap: 7px;
-          max-width: min(94vw, 920px);
+          max-width: min(94vw, 960px);
           min-height: 46px;
           padding: 7px 9px;
           border: 1px solid rgba(255,255,255,.18);
@@ -74,6 +82,7 @@ export class ControlPanel {
         @media (max-width: 720px) {
           .panel { gap: 5px; padding: 6px; }
           button { padding: 0 8px; }
+          select { padding: 0 6px; }
           .status { min-width: 72px; max-width: 120px; }
         }
       </style>
@@ -82,6 +91,9 @@ export class ControlPanel {
         <button id="pause" type="button">暂停</button>
         <button id="previous" type="button" aria-label="上一项">←</button>
         <button id="next" type="button" aria-label="下一项">→</button>
+        <select id="direction" aria-label="自动浏览方向">
+          ${BROWSE_DIRECTIONS.map((value) => `<option value="${value}">${BROWSE_DIRECTION_LABELS[value]}</option>`).join('')}
+        </select>
         <select id="duration" aria-label="图片停留时间">
           ${DURATIONS.map((value) => `<option value="${value}">${value / 1000} 秒</option>`).join('')}
         </select>
@@ -99,6 +111,7 @@ export class ControlPanel {
     this.previous = this.shadow.querySelector('#previous');
     this.next = this.shadow.querySelector('#next');
     this.status = this.shadow.querySelector('#status');
+    this.direction = this.shadow.querySelector('#direction');
     this.duration = this.shadow.querySelector('#duration');
 
     for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick']) {
@@ -109,6 +122,7 @@ export class ControlPanel {
     this.pause.addEventListener('click', onTogglePause);
     this.previous.addEventListener('click', () => onNavigate(-1, false));
     this.next.addEventListener('click', () => onNavigate(1, false));
+    this.direction.addEventListener('change', () => onSetBrowseDirection(this.direction.value));
     this.duration.addEventListener('change', () => onSetPhotoDuration(Number(this.duration.value)));
     this.shadow.querySelector('#collapse').addEventListener('click', () => onSetPanelCollapsed(true));
     this.launcher.addEventListener('click', () => onSetPanelCollapsed(false));
@@ -121,6 +135,7 @@ export class ControlPanel {
     this.pause.disabled = !state.active;
     this.previous.disabled = !state.canPrevious;
     this.next.disabled = !state.canNext;
+    this.direction.value = state.browseDirection;
     this.duration.value = String(state.photoDurationMs);
     this.panel.hidden = state.collapsed;
     this.launcher.hidden = !state.collapsed;

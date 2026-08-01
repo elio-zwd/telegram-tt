@@ -93,6 +93,11 @@ function verifyModuleBoundaries(modules) {
 
   const settings = modules.get('core/settings.js');
   assertCondition(settings.includes("const STORAGE_KEY = 'tt.mediaContinuity.v1';"), '设置模块未保留原 storage key');
+  assertCondition(settings.includes("browseDirection: 'forward'"), '设置模块缺少默认正向浏览方向');
+  assertCondition(
+    settings.includes('BROWSE_DIRECTIONS.includes(source.browseDirection)'),
+    '设置模块未校验正向和反向浏览方向',
+  );
 
   const mediaViewer = modules.get('platform/media-viewer.js');
   assertCondition(mediaViewer.includes("document.querySelector('.media-viewer-whole')"), '媒体查看器选择器未集中到平台层');
@@ -109,9 +114,34 @@ function verifyModuleBoundaries(modules) {
   const controlPanel = modules.get('features/control-panel/control-panel.js');
   assertCondition(!controlPanel.includes('../../platform/'), '控制面板不得依赖 platform 模块');
   assertCondition(!controlPanel.includes('document.querySelector('), '控制面板不得查询 Telegram 页面 DOM');
+  assertCondition(controlPanel.includes('id="direction"'), '控制面板缺少自动浏览方向选择框');
+  assertCondition(controlPanel.includes('onSetBrowseDirection'), '控制面板缺少方向回调');
+  assertCondition(controlPanel.includes('onNavigate(-1, false)'), '控制面板上一项必须保持 -1');
+  assertCondition(controlPanel.includes('onNavigate(1, false)'), '控制面板下一项必须保持 1');
 
   const viewerSession = modules.get('features/continuous-browsing/viewer-session.js');
   assertCondition(viewerSession.includes("from '../../platform/navigation.js'"), '连续浏览模块必须通过 platform/navigation.js 导航');
+  assertCondition(viewerSession.includes('getAutomaticDirection()'), '连续浏览模块缺少统一自动方向方法');
+  assertCondition(
+    viewerSession.includes("return this.settings.browseDirection === 'backward' ? -1 : 1;"),
+    '自动方向方法未保持 forward=1、backward=-1',
+  );
+  assertCondition(
+    (viewerSession.match(/this\.navigate\((?:this\.getAutomaticDirection\(\)|automaticDirection), true\)/g) || []).length >= 2,
+    '图片和视频自动切换未统一使用自动方向',
+  );
+  assertCondition(
+    viewerSession.includes("if (event.key === 'ArrowRight') this.prepareNavigationTarget(1);"),
+    'ArrowRight 必须继续保持方向 1',
+  );
+  assertCondition(
+    viewerSession.includes("else if (event.key === 'ArrowLeft') this.prepareNavigationTarget(-1);"),
+    'ArrowLeft 必须继续保持方向 -1',
+  );
+  assertCondition(
+    viewerSession.includes('this.prepareNavigationTarget(direction);'),
+    '导航前必须使用实际方向准备关闭定位目标',
+  );
 
   const debugApi = modules.get('features/debug/debug-api.js');
   const publicApiNames = [
@@ -187,6 +217,7 @@ async function verifyGeneratedOutput() {
     '生成文件缺少运行时版本常量',
   );
   assertCondition(/version:\s*WEB_K_VERSION\b/.test(generated), '调试 API 未使用运行时版本常量');
+  assertCondition(generated.includes('browseDirection'), '生成文件缺少浏览方向设置');
 
   assertCondition(!/\bimport\s*\(/.test(generated), '生成文件禁止运行时动态 import');
   assertCondition(!/^\s*(?:import|export)\s/m.test(generated), '生成文件仍包含 ES Module 语句');
