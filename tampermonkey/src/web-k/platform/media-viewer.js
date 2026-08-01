@@ -51,6 +51,10 @@ export function getMediaType(media) {
   return undefined;
 }
 
+export function isLoopMedia(media) {
+  return media instanceof HTMLVideoElement && media.loop === true;
+}
+
 function getMediaNodeId(media) {
   if (!mediaNodeIds.has(media)) {
     mediaNodeIds.set(media, nextMediaNodeId);
