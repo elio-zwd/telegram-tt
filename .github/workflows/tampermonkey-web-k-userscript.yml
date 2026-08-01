@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
@@ -109,6 +109,26 @@ jobs:
           run_command git diff --name-status "${BASE_SHA}...HEAD"
           run_command git status --short
           run_command git rev-parse HEAD
+
+      - name: 回填生成 userscript 并恢复工作流
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- tampermonkey/telegram-media-continuity-web-k.user.js; then
+            echo "生成 userscript 已与仓库一致，无需回填"
+            exit 0
+          fi
+          git fetch origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          git show "origin/${BASE_REF}:.github/workflows/tampermonkey-web-k-userscript.yml" > .github/workflows/tampermonkey-web-k-userscript.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tampermonkey/telegram-media-continuity-web-k.user.js .github/workflows/tampermonkey-web-k-userscript.yml
+          git commit -m "build: 重新生成 Web K userscript"
+          git push origin "HEAD:${HEAD_REF}"
 
       - name: 上传生成 userscript
         if: always()
