@@ -232,7 +232,7 @@ tampermonkey/telegram-media-continuity-web-k.user.js
 https://web.telegram.org/k/*
 ```
 
-当前版本：`0.4.0-k6`。
+当前版本：`0.4.0-k7`。
 
 ## 开发真源
 
@@ -260,13 +260,17 @@ version.js  版本单一来源
 - 图片加载后按设置倒计时切换；
 - 普通视频结束后自动切换；
 - 自动连续浏览可选择正向（下一项）或反向（上一项）；
+- 自动连续浏览可选择“图片和视频”“仅图片”或“仅视频”；
+- 媒体筛选只作用于自动推进，TT、Telegram 官方控件和方向键不受限制；
+- 自动模式遇到不匹配媒体时沿当前方向有界跳过，最多 50 项、总计最多 15 秒；
+- 筛选序列在设置变化、手动导航、暂停和会话销毁时立即取消，旧 timer 不会串入新序列；
+- 无法可靠判断媒体类型时暂停，不根据 URL、文件名、私有模块或 IndexedDB 猜测；
 - 方向设置只影响自动切换，TT、Telegram 官方控件和方向键继续保持原物理方向；
-- 切换方向后当前图片从完整停留时间重新倒计时，不立即导航，也不改变暂停和连续浏览状态；
+- 切换方向或筛选后当前图片从完整停留时间重新倒计时，不立即导航，也不改变连续浏览状态；
 - 正向到末尾、反向到开头时安全停止，不循环、不自动加载更多历史；
 - 鼠标悬停、页面失焦、缩放和交互期间暂停；
 - 协调 TT 控件、Telegram 官方左右控件和方向键切换；
-- 关闭查看器后定位最后成功确认的消息；
-- 正向和反向自动切换都使用实际方向准备关闭定位目标；
+- 关闭查看器后定位最后真正成功显示的媒体消息，跳过中的中间项目不会被确认为最终目标；
 - 相册媒体定位整条来源消息；
 - Shadow DOM 控制条；
 - 脱敏调试和关闭流程探测。
@@ -275,8 +279,9 @@ version.js  版本单一来源
 
 - **连续浏览：开／关**：启用或关闭自动推进；
 - **暂停／继续**：临时暂停或恢复当前连续浏览会话；
-- **←／→**：始终触发 Telegram 官方上一项或下一项，不受自动方向设置影响；
+- **←／→**：始终触发 Telegram 官方上一项或下一项，不受自动方向和媒体筛选影响；
 - **正向／反向**：设置下一次自动切换方向；
+- **图片和视频／仅图片／仅视频**：设置自动连续浏览的媒体类型；
 - **图片时间**：选择图片停留时间；
 - **×**：折叠为一个 `TT` 小按钮，折叠状态会持久化。
 
@@ -293,9 +298,10 @@ Web K 设置包含：
 - 连续浏览开关；
 - 图片停留时间；
 - 自动浏览方向 `forward` 或 `backward`；
+- 自动媒体筛选 `all`、`images` 或 `videos`；
 - 控制条折叠状态。
 
-旧数据缺少方向、方向值非法、JSON 损坏或 `localStorage` 不可用时，自动方向安全回退为 `forward`。不创建第二个 storage key。
+旧数据缺少筛选字段、筛选值非法、JSON 损坏或 `localStorage` 不可用时，媒体筛选安全回退为 `all`。旧数据的方向兼容规则保持不变，不创建第二个 storage key。
 
 ## 构建
 
@@ -317,6 +323,8 @@ node --check tampermonkey/telegram-media-continuity-web-k.user.js
 - 版本来自 `version.js`；
 - storage key 继续为 `tt.mediaContinuity.v1`；
 - `browseDirection` 默认值为 `forward`；
+- `mediaFilter` 默认值为 `all`；
+- 媒体筛选具备最大跳过次数、总超时和序列隔离；
 - `legacy-main.js` 不存在；
 - 四类 feature 模块存在；
 - 生成文件与重新构建结果一致。
@@ -339,14 +347,14 @@ window.TelegramMediaContinuity.rescan
 window.TelegramMediaContinuity.getSummary
 ```
 
-`getSummary().settings` 会自然包含当前 `browseDirection`。调试输出不得包含聊天正文、频道名称、用户名、原始 href 或完整媒体 URL。
+`getSummary().settings` 会自然包含当前 `browseDirection` 和 `mediaFilter`。调试输出不得包含聊天正文、频道名称、用户名、原始 href 或完整媒体 URL。
 
 ## 验收边界
 
-构建和 CI 只能证明源码、产物和静态门禁成立，不能替代真实 Telegram Web K 浏览器验收。正向和反向连续浏览完成真实页面回归前，功能 PR 保持 Draft。
+构建和 CI 只能证明源码、产物和静态门禁成立，不能替代真实 Telegram Web K 浏览器验收。媒体筛选的正反向、相册、关闭定位、快速改筛选和窄窗口等场景完成真实页面回归前，功能 PR 保持 Draft。
 
 详细设计、兼容规则和验收重点见：
 
 ```text
-docs/tampermonkey-web-k-browse-direction.md
+docs/tampermonkey-web-k-media-filter.md
 ```
