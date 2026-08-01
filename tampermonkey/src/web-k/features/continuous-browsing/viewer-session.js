@@ -55,6 +55,7 @@ export class ViewerSession {
       onTogglePause: () => this.togglePause(),
       onNavigate: (direction, automatic) => this.navigate(direction, automatic),
       onSetPhotoDuration: (duration) => this.setPhotoDuration(duration),
+      onSetBrowseDirection: (direction) => this.setBrowseDirection(direction),
       onSetPanelCollapsed: (collapsed) => this.setPanelCollapsed(collapsed),
     });
     this.observer = new MutationObserver(() => this.requestRefresh());
@@ -104,9 +105,14 @@ export class ViewerSession {
       paused: this.paused,
       collapsed: this.settings.panelCollapsed,
       photoDurationMs: this.settings.photoDurationMs,
+      browseDirection: this.settings.browseDirection,
       canPrevious: availability.previous,
       canNext: availability.next,
     };
+  }
+
+  getAutomaticDirection() {
+    return this.settings.browseDirection === 'backward' ? -1 : 1;
   }
 
   requestRefresh() {
@@ -207,7 +213,7 @@ export class ViewerSession {
       add(media, 'canplay', confirmVideo);
       add(media, 'playing', confirmVideo);
       add(media, 'ended', () => {
-        if (this.active && !this.paused) this.navigate(1, true);
+        if (this.active && !this.paused) this.navigate(this.getAutomaticDirection(), true);
       });
       add(media, 'error', () => {
         this.clearPendingNavigation();
@@ -246,6 +252,9 @@ export class ViewerSession {
     if (this.destroyed || !this.currentMedia) return;
     if (forceRestart) this.clearTimer();
 
+    const automaticDirection = this.getAutomaticDirection();
+    const automaticDirectionLabel = automaticDirection > 0 ? '下一项' : '上一项';
+
     if (this.currentMedia instanceof HTMLVideoElement) {
       this.clearTimer();
       if (!this.active) return this.panel.setStatus('连续浏览已关闭');
@@ -257,7 +266,7 @@ export class ViewerSession {
           playPromise.catch(() => this.panel.setStatus('点击视频开始播放'));
         }
       } else {
-        this.panel.setStatus('视频结束后自动切换');
+        this.panel.setStatus(`视频结束后自动切换${automaticDirectionLabel}`);
       }
       return undefined;
     }
@@ -281,13 +290,13 @@ export class ViewerSession {
     const startedAt = Date.now();
     const updateCountdown = () => {
       const remaining = Math.max(0, duration - (Date.now() - startedAt));
-      this.panel.setStatus(`图片 ${(remaining / 1000).toFixed(1)} 秒后切换`);
+      this.panel.setStatus(`图片 ${(remaining / 1000).toFixed(1)} 秒后切换${automaticDirectionLabel}`);
     };
     updateCountdown();
     this.countdownId = window.setInterval(updateCountdown, COUNTDOWN_REFRESH_MS);
     this.timerId = window.setTimeout(() => {
       this.clearTimer();
-      this.navigate(1, true);
+      this.navigate(automaticDirection, true);
     }, duration);
     return undefined;
   }
@@ -313,6 +322,12 @@ export class ViewerSession {
     this.scheduleForCurrentMedia(true);
   }
 
+  setBrowseDirection(direction) {
+    this.settings = updateSettings(this.settings, { browseDirection: direction });
+    this.panel.render(this.viewState());
+    this.scheduleForCurrentMedia(true);
+  }
+
   setPanelCollapsed(collapsed) {
     this.settings = updateSettings(this.settings, { panelCollapsed: collapsed });
     this.panel.render(this.viewState());
@@ -322,7 +337,7 @@ export class ViewerSession {
     if (this.destroyed || this.isNavigating) return;
     if (automatic && (!this.active || this.paused)) return;
     if (!getNavigationButton(this.viewer, direction)) {
-      if (automatic) this.finish('已到当前媒体末尾');
+      if (automatic) this.finish(direction > 0 ? '已到当前媒体末尾' : '已到当前媒体开头');
       else this.panel.setStatus(direction > 0 ? '没有可用的下一项' : '没有可用的上一项');
       this.panel.render(this.viewState());
       return;
