@@ -190,7 +190,7 @@ Shadow DOM 控制条整合：
 
 ## 9. 静态与构建门禁
 
-最终应执行：
+最终执行命令：
 
 ```text
 npm ci
@@ -199,13 +199,22 @@ npm run build:tampermonkey:web-k
 npm run check:tampermonkey:web-k
 node --check tampermonkey/telegram-media-continuity-web-k.user.js
 git diff --check
-git diff --exit-code -- tampermonkey/telegram-media-continuity-web-k.user.js
-git status --short
 ```
 
-连续两次构建的 SHA-256 必须一致。生成 userscript 只能由构建产生，不得手工修改。
+受控远端预构建已在 Ubuntu 24.04、Node.js `24.14.1`、npm `11.11.0` 环境执行：
 
-当前远端开发环境若无法执行 npm/Vite，只能记录源码语法检查、临时行为脚本和静态审阅；Linux／Windows 构建结果以 Draft PR GitHub Actions 为准。
+- `npm ci` 成功；
+- 修改源码和门禁脚本的 `node --check` 成功；
+- Vite `8.1.0` 连续构建两次成功，均转换 25 个模块；
+- 两次生成 userscript 的 SHA-256 一致；
+- `npm run check:tampermonkey:web-k` 通过，识别版本 `0.4.0-k10`、24 个源码模块和 V1 四类门禁；
+- 生成 userscript 的 `node --check` 通过；
+- `git diff --check` 通过；
+- 最终 userscript SHA-256：`8bddec8e413cf3cdbc01b2d7032aecd65dc280463913c0a16ac5705ae2243e75`。
+
+`npm ci` 同时报告仓库既有依赖存在 5 个审计项（1 个 moderate、4 个 high）；本任务按范围约束未升级依赖、未执行 `npm audit fix`。生成 userscript 只能由构建产生，不得手工修改。
+
+最终 Linux／Windows 结果以 Draft PR 切回正式稳定基线后的 GitHub Actions 为准。
 
 ## 10. 最终真实浏览器验收
 
