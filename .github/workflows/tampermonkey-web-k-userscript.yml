@@ -67,6 +67,18 @@ jobs:
           echo "exit_code=${code} command=npm run check:tampermonkey:web-k"
           exit "${code}"
 
+      - name: 确认 M3 模块结构
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e tampermonkey/src/web-k/legacy-main.js
+          test -f tampermonkey/src/web-k/app.js
+          test -d tampermonkey/src/web-k/features/continuous-browsing
+          test -d tampermonkey/src/web-k/features/close-position
+          test -d tampermonkey/src/web-k/features/control-panel
+          test -d tampermonkey/src/web-k/features/debug
+          echo "exit_code=0 command=verify M3 module structure"
+
       - name: 执行生成脚本语法检查
         shell: bash
         run: |
@@ -168,6 +180,21 @@ jobs:
 
           if ($firstHash -ne $secondHash) {
             throw "连续构建输出不一致：$firstHash != $secondHash"
+          }
+
+      - name: 确认 M3 模块结构
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path 'tampermonkey/src/web-k/legacy-main.js') { throw 'legacy-main.js 仍然存在' }
+          foreach ($path in @(
+            'tampermonkey/src/web-k/app.js',
+            'tampermonkey/src/web-k/features/continuous-browsing',
+            'tampermonkey/src/web-k/features/close-position',
+            'tampermonkey/src/web-k/features/control-panel',
+            'tampermonkey/src/web-k/features/debug'
+          )) {
+            if (-not (Test-Path $path)) { throw "M3 必需路径缺失：$path" }
           }
 
       - name: 执行 Windows 静态检查
