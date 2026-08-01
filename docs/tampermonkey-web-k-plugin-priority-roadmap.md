@@ -1,11 +1,13 @@
 # Telegram Web K 插件优先迁移路线摘要
 
-## 0. PR-M3 当前状态（2026-08-01）
+## 0. P0 模块化完成状态（2026-08-01）
 
-- M1 / PR #9 与 M2 / PR #11 已合并；
-- M3 / Draft PR #12 已完成四类 feature 抽取、`app.js` 装配、`legacy-main.js` 删除和生成 userscript 回填；
-- 当前只等待最新 Head 的 Linux / Windows CI 与真实 Telegram Web K 浏览器回归；
-- 浏览器验收前保持 Draft，P1 不开始编码。
+- M1 / PR #9、M2 / PR #11、M3 / PR #12 均已完成并合并；
+- PR #12 采用 Squash merge，稳定 Commit 为 `5dac28431d4b51ea7a13c6bb485318d460eb3f25`；
+- 合并后的稳定 Commit 已完成 Windows 10 本地只读构建、静态检查和真实 Telegram Web K 浏览器回归；
+- 两次构建 SHA-256 与 PR #12 CI 一致：`cebe2c0a2065d31feb75b6cc32c6ccd703a1bc9f09d3fe951f5fbcca498390a1`；
+- 最终验收结论为 `PASS`，P0 模块化正式完成，允许开始 P1 产品功能开发；
+- 完整完成证据见 `docs/tampermonkey-web-k-p0-completion.md`。
 
 ## 1. 结论
 
@@ -20,16 +22,18 @@ Web A 仅保留历史脚本，不新增功能、不建立适配器、不参与�
 唯一执行主线：
 
 ```text
-M1 构建基座（已完成并合并）
-→ M2 共享核心与 Web K 平台层（已完成并合并）
-→ M3 连续浏览、关闭定位、控制面板、调试模块（Draft PR #12，等待真实浏览器验收）
-→ P1 浏览体验
+P0 模块化（已完成）
+→ P1 浏览体验（当前阶段）
 → P2 状态与频道
 → P3 保存与下载
 → P4 高级实验
 ```
 
-P0 模块化完成前，不启动新的产品功能代码。
+P1 当前首个目标：
+
+```text
+P1-01 正向和反向连续浏览
+```
 
 ## 2. 当前状态
 
@@ -38,18 +42,19 @@ P0 模块化完成前，不启动新的产品功能代码。
 | PR #6 Web K 连续浏览兼容 | 已合并并完成真实浏览器验收 |
 | PR #7 Web K 关闭定位 | 已合并；关闭定位和相册消息级定位已完成 |
 | 稳定版本 | `0.4.0-k5` |
-| 最新稳定基线 | `codex/tampermonkey-media-continuity@13223980777d276bb698a71166edf45710475c6c` |
+| 最新稳定基线 | `codex/tampermonkey-media-continuity@5dac28431d4b51ea7a13c6bb485318d460eb3f25` |
 | 规划 PR #8 | 已完成并合并；Merge Commit `88b359a9171faee33676301ae3fd01e0b367035f` |
 | PR-M1 / PR #9 | 已完成并合并；Merge Commit `0d083a6ba31052da139e3a77330c70ab22e6efba` |
 | PR-M2 / PR #11 | 已完成并合并；Merge Commit `13223980777d276bb698a71166edf45710475c6c` |
-| PR-M3 / Draft PR #12 | 代码、构建和静态检查已完成；真实浏览器验收待完成 |
+| PR-M3 / PR #12 | 已完成并合并；Squash Commit `5dac28431d4b51ea7a13c6bb485318d460eb3f25`；合并后浏览器验收 PASS |
+| 当前阶段 | P1 浏览体验 |
+| 下一目标 | 正向和反向连续浏览 |
 | 当前路线 | Web K 唯一执行路线 |
 | Web A | 历史只读，不开发 |
 
 状态定义：
 
 - **已完成**：有真实 Web K 实现和验收依据；
-- **P0**：模块化前置基础设施；
 - **P1**：浏览体验；
 - **P2**：状态、频道和本地数据；
 - **P3**：保存和下载，必须先实验；
@@ -70,15 +75,15 @@ P0 模块化完成前，不启动新的产品功能代码。
 | C08 | 相册内部映射和整条消息定位 | 当前新增需求 | `close-position`、`platform/message-list` | PR #7 |
 | C09 | 脱敏调试与关闭探测 | 建议功能 | `debug` | PR #6/#7 |
 
-## 4. P0：模块化
+## 4. P0：模块化（已完成）
 
-| 阶段 | 任务 | 状态 | 分支 / PR | 串行依赖 |
+| 阶段 | 任务 | 状态 | 分支 / PR | 结果 |
 | --- | --- | --- | --- | --- |
-| M1 | 构建基座、版本和 metadata 单一来源、生成文件检查 | 已完成并合并 | `refactor/tampermonkey-web-k-build-foundation` / PR #9 | PR #8 已合并；Merge Commit `0d083a6ba31052da139e3a77330c70ab22e6efba` |
-| M2 | runtime、lifecycle、settings、logger、DOM、查看器、消息列表、导航 | 已完成并合并 | `refactor/tampermonkey-web-k-core-platform` / PR #11 | M1 已合并 |
-| M3 | 连续浏览、关闭定位、控制面板、调试模块；删除 legacy | Draft PR #12：代码与构建已完成，浏览器验收待完成 | `refactor/tampermonkey-web-k-feature-modules` / PR #12 | M2 已合并 |
+| M1 | 构建基座、版本和 metadata 单一来源、生成文件检查 | 已完成并合并 | `refactor/tampermonkey-web-k-build-foundation` / PR #9 | 双平台 CI、本地构建和真实浏览器回归通过 |
+| M2 | runtime、lifecycle、settings、logger、DOM、查看器、消息列表、导航 | 已完成并合并 | `refactor/tampermonkey-web-k-core-platform` / PR #11 | 双平台 CI、本地构建和 22 项浏览器回归通过 |
+| M3 | 连续浏览、关闭定位、控制面板、调试模块；删除 legacy | 已完成并合并 | `refactor/tampermonkey-web-k-feature-modules` / PR #12 | 合并后稳定 Commit 构建、静态检查和浏览器回归 PASS |
 
-P0 必须包含：
+P0 已包含：
 
 - 构建基座；
 - 版本和 metadata；
@@ -87,9 +92,11 @@ P0 必须包含：
 - 连续浏览模块；
 - 关闭定位模块；
 - 控制面板模块；
-- 调试模块。
-
-M1、M2、M3 每个阶段都必须保持 PR #7 行为等价，并重复真实 Web K 核心回归。
+- 调试模块；
+- `app.js` 应用装配；
+- `legacy-main.js` 删除；
+- 单文件 userscript 稳定构建；
+- 合并后真实 Web K 行为等价验收。
 
 ## 5. P1：浏览体验
 
@@ -108,10 +115,10 @@ M1、M2、M3 每个阶段都必须保持 PR #7 行为等价，并重复真实 We
 
 | 功能 | 来源 | 主要依赖 | 主要风险 | 建议分支 | 并行说明 |
 | --- | --- | --- | --- | --- | --- |
-| 正向/反向浏览 | 原计划 | `platform/navigation` | 方向语义和官方控件 | `feat/tampermonkey-web-k-browse-direction` | 先稳定 navigation 接口 |
-| 图片/视频/GIF 类型过滤 | 原计划 | 浏览方向、媒体识别 | 连续跳过和末尾 | `feat/tampermonkey-web-k-media-filter` | 与循环媒体策略冲突较高 |
-| 快捷键 | 原计划 | 控制面板、会话状态 | 输入框和 Telegram 冲突 | `feat/tampermonkey-web-k-shortcuts` | 可独立 |
-| 自定义图片停留时间 | 原计划 | 设置模块 | 输入校验、旧设置迁移 | `feat/tampermonkey-web-k-photo-duration` | 可独立 |
+| 正向/反向浏览 | 原计划 | `platform/navigation` | 方向语义和官方控件 | `feat/tampermonkey-web-k-browse-direction` | 当前首要任务；先稳定 navigation 接口 |
+| 图片/视频/GIF 类型过滤 | 原计划 | 浏览方向、媒体识别 | 连续跳过和末尾 | `feat/tampermonkey-web-k-media-filter` | 等浏览方向合并；与循环媒体策略冲突较高 |
+| 快捷键 | 原计划 | 控制面板、会话状态 | 输入框和 Telegram 冲突 | `feat/tampermonkey-web-k-shortcuts` | 可在不修改 navigation 主链路时独立，但生成 userscript 仍需重基重建 |
+| 自定义图片停留时间 | 原计划 | 设置模块 | 输入校验、旧设置迁移 | `feat/tampermonkey-web-k-photo-duration` | 可与纯导航功能并行，但控制条修改需避免冲突 |
 | GIF/循环短视频策略 | 原计划 | 媒体识别 | 类型识别和循环事件 | `feat/tampermonkey-web-k-loop-media-policy` | 与过滤功能协调 |
 | PiP/全屏暂停 | 原计划 | 会话状态 | 浏览器事件差异 | `feat/tampermonkey-web-k-playback-state` | 可独立 |
 | 网络断开与失败阈值 | 原计划 | 会话和媒体状态 | 误判或误跳过 | 独立稳定性 PR | 与过滤/循环策略建议串行 |
@@ -203,27 +210,23 @@ D01 未通过前，不启动自动保存代码。
 
 ## 10. 多 AI 对话
 
-### 当前可并行
+### 当前允许
 
-| 对话 | 任务 | 分支 / PR | 冲突范围 |
+| 对话 | 任务 | 分支 / PR | 约束 |
 | --- | --- | --- | --- |
-| A | M2 共享核心与 Web K 平台层 | `refactor/tampermonkey-web-k-core-platform` / PR #11 | 修改 M2 源码、构建检查、Tampermonkey README 和生成 userscript；不修改本路线两份文档 |
-| B | 迁移矩阵刷新 | `docs/tampermonkey-web-k-migration-matrix-refresh` / PR #10 | 仅两份路线文档 |
-| C | M2 真实浏览器只读回归 | 不创建开发分支 | 只检出和验收 PR #11，不修改文件 |
+| A | P1-01 正向和反向浏览 | `feat/tampermonkey-web-k-browse-direction` | 主代码任务，独占 navigation、continuous-browsing、settings、control-panel 和生成 userscript |
+| B | P1 后续需求讨论和验收用例设计 | 不创建代码分支，或仅新增独立文档 | 不修改代码、路线公共文档和生成 userscript |
+| C | P1-01 本地只读验收 | 不创建开发分支 | 只检出精确 Head，执行构建和浏览器验收 |
 
-### 后续串行
+### 串行要求
 
 ```text
-PR #8 已合并
-→ M1 / PR #9 已完成、验收并合并
-→ M2 / PR #11（下一实施目标）
-→ M2 合并
-→ M3
-→ M3 合并
-→ 新功能
+P1-01 浏览方向合并
+→ P1-02 媒体类型过滤
+→ P1-03 快捷键
 ```
 
-模块化完成后，不同 `features/**` 目录可并行；公共 `core/**` 或 `platform/**` 变化先单独建基础 PR。
+不同 `features/**` 目录后续可以并行，但公共 `core/**`、`platform/**`、settings、control-panel 或生成 userscript 发生重叠时必须串行。
 
 ## 11. 共同生成文件
 
@@ -246,6 +249,8 @@ tampermonkey/telegram-media-continuity-web-k.user.js
 5. 文件名是否允许包含频道显示名称；
 6. P4 中哪些实验值得继续；
 7. 队列循环是否只限当前会话。
+
+正向/反向浏览的基础方向语义由 P1-01 按风险最低的方案实施，不需要等待上述后续产品确认。
 
 ## 13. 路线维护
 
