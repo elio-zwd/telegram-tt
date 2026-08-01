@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   verify:
@@ -37,9 +37,6 @@ jobs:
 
       - name: 安装依赖
         run: npm ci
-
-      - name: 更新 M3 文档（一次性）
-        run: node tampermonkey/build/update-m3-docs-once.mjs
 
       - name: 连续构建两次并比较输出
         shell: bash
@@ -120,29 +117,6 @@ jobs:
           name: telegram-media-continuity-web-k-userscript-linux
           path: tampermonkey/telegram-media-continuity-web-k.user.js
           if-no-files-found: error
-
-      - name: 提交 M3 文档（一次性）
-        if: github.event_name == 'pull_request'
-        shell: bash
-        env:
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            tampermonkey/telegram-media-continuity-web-k.user.js \
-            tampermonkey/src/web-k/AGENTS.md \
-            tampermonkey/README.md \
-            docs/tampermonkey-web-k-feature-modules-m3.md \
-            docs/tampermonkey-plugin-migration-matrix.md \
-            docs/tampermonkey-web-k-plugin-priority-roadmap.md
-          if git diff --cached --quiet; then
-            echo "M3 文档和生成文件已是最新状态"
-            exit 0
-          fi
-          git commit -m "docs: 完成 Web K 功能模块交接"
-          git push origin "HEAD:${HEAD_BRANCH}"
 
       - name: 确认生成文件已提交
         shell: bash
