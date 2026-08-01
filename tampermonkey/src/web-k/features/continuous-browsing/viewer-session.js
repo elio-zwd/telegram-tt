@@ -10,6 +10,7 @@ import { loadSettings, updateSettings } from '../../core/settings.js';
 import { describeElement, isElementVisible } from '../../platform/dom.js';
 import {
   findActiveMedia,
+  getMediaType,
   isMediaZoomed,
   mediaFingerprint,
 } from '../../platform/media-viewer.js';
@@ -26,6 +27,14 @@ const INTERACTION_COOLDOWN_MS = 900;
 const REFRESH_DELAY_MS = 80;
 const NAVIGATION_POLL_MS = 100;
 const COUNTDOWN_REFRESH_MS = 200;
+const FILTER_SKIP_DELAY_MS = 80;
+const FILTER_SEQUENCE_MAX_SKIPS = 50;
+const FILTER_SEQUENCE_TIMEOUT_MS = 15000;
+
+const MEDIA_TYPE_LABELS = Object.freeze({
+  images: '图片',
+  videos: '视频',
+});
 
 export class ViewerSession {
   constructor(viewer, { controlPanelHostId, createControlPanel }) {
@@ -45,6 +54,12 @@ export class ViewerSession {
     this.countdownId = 0;
     this.refreshTimer = 0;
     this.interactionTimer = 0;
+    this.navigationPollTimer = 0;
+    this.navigationAttemptId = 0;
+    this.filterSkipTimer = 0;
+    this.filterSequenceId = 0;
+    this.filterSequence = undefined;
+    this.blockCurrentTargetConfirmation = false;
     this.targetTracker = new MediaTargetTracker({
       getCurrentFingerprint: () => this.currentFingerprint,
     });
@@ -56,6 +71,7 @@ export class ViewerSession {
       onNavigate: (direction, automatic) => this.navigate(direction, automatic),
       onSetPhotoDuration: (duration) => this.setPhotoDuration(duration),
       onSetBrowseDirection: (direction) => this.setBrowseDirection(direction),
+      onSetMediaFilter: (filter) => this.setMediaFilter(filter),
       onSetPanelCollapsed: (collapsed) => this.setPanelCollapsed(collapsed),
     });
     this.observer = new MutationObserver(() => this.requestRefresh());
@@ -84,12 +100,19 @@ export class ViewerSession {
     window.addEventListener('pointercancel', this.handlePointerUp, true);
     this.handleViewerPointerDown = (event) => {
       const direction = getNavigationDirectionFromTarget(this.viewer, event.target);
-      if (direction) this.prepareNavigationTarget(direction);
+      if (!direction) return;
+      this.takeOverFilterSequence();
+      this.prepareNavigationTarget(direction);
     };
     this.handleViewerKeyDown = (event) => {
       if (event.repeat || !isElementVisible(this.viewer)) return;
-      if (event.key === 'ArrowRight') this.prepareNavigationTarget(1);
-      else if (event.key === 'ArrowLeft') this.prepareNavigationTarget(-1);
+      if (event.key === 'ArrowRight') {
+        this.takeOverFilterSequence();
+        this.prepareNavigationTarget(1);
+      } else if (event.key === 'ArrowLeft') {
+        this.takeOverFilterSequence();
+        this.prepareNavigationTarget(-1);
+      }
     };
     this.viewer.addEventListener('pointerdown', this.handleViewerPointerDown, true);
     window.addEventListener('keydown', this.handleViewerKeyDown, true);
@@ -106,6 +129,7 @@ export class ViewerSession {
       collapsed: this.settings.panelCollapsed,
       photoDurationMs: this.settings.photoDurationMs,
       browseDirection: this.settings.browseDirection,
+      mediaFilter: this.settings.mediaFilter,
       canPrevious: availability.previous,
       canNext: availability.next,
     };
@@ -151,6 +175,7 @@ export class ViewerSession {
   }
 
   confirmCurrentMediaTarget() {
+    if (this.blockCurrentTargetConfirmation) return false;
     return this.targetTracker.confirmCurrentMediaTarget(this.currentMedia);
   }
 
@@ -165,9 +190,10 @@ export class ViewerSession {
   bindMedia(media, nextFingerprint) {
     this.clearTimer();
     this.releaseMediaListeners();
+    this.completeNavigationAttempt();
     this.currentMedia = media;
     this.currentFingerprint = nextFingerprint;
-    this.isNavigating = false;
+    this.blockCurrentTargetConfirmation = false;
 
     const add = (target, type, listener, options) => {
       addEventListenerCleanup(this.mediaCleanup, target, type, listener, options);
@@ -201,11 +227,7 @@ export class ViewerSession {
         this.confirmCurrentMediaTarget();
         this.scheduleForCurrentMedia(true);
       }, { once: true });
-      add(media, 'error', () => {
-        this.clearTimer();
-        this.clearPendingNavigation();
-        this.panel.setStatus('图片加载失败，请手动处理');
-      }, { once: true });
+      add(media, 'error', () => this.handleMediaError('图片加载失败，请手动处理'), { once: true });
     } else if (media instanceof HTMLVideoElement) {
       const confirmVideo = () => this.confirmCurrentMediaTarget();
       add(media, 'loadedmetadata', confirmVideo);
@@ -213,17 +235,119 @@ export class ViewerSession {
       add(media, 'canplay', confirmVideo);
       add(media, 'playing', confirmVideo);
       add(media, 'ended', () => {
-        if (this.active && !this.paused) this.navigate(this.getAutomaticDirection(), true);
+        if (this.active && !this.paused && !this.blockCurrentTargetConfirmation) {
+          this.navigate(this.getAutomaticDirection(), true);
+        }
       });
-      add(media, 'error', () => {
-        this.clearPendingNavigation();
-        this.panel.setStatus('视频播放失败，请手动处理');
-      });
+      add(media, 'error', () => this.handleMediaError('视频播放失败，请手动处理'));
     }
 
     this.panel.render(this.viewState());
+    if (this.handleFilterSequenceForCurrentMedia()) return;
     this.confirmCurrentMediaTarget();
     this.scheduleForCurrentMedia(true);
+  }
+
+  handleMediaError(message) {
+    if (this.blockCurrentTargetConfirmation) return;
+    this.clearTimer();
+    this.clearPendingNavigation();
+    this.panel.setStatus(message);
+  }
+
+  handleFilterSequenceForCurrentMedia() {
+    const sequence = this.filterSequence;
+    if (!this.isFilterSequenceCurrent(sequence)) return false;
+
+    if (this.hasFilterSequenceTimedOut(sequence)) {
+      this.blockCurrentTargetConfirmation = true;
+      this.pauseFilterSequence('筛选跳过超过总时限，连续浏览已暂停');
+      return true;
+    }
+
+    const mediaType = getMediaType(this.currentMedia);
+    if (!mediaType) {
+      this.blockCurrentTargetConfirmation = true;
+      this.pauseFilterSequence('无法可靠判断媒体类型，连续浏览已暂停');
+      return true;
+    }
+    if (mediaType === sequence.filter) {
+      this.cancelFilterSequence();
+      return false;
+    }
+
+    this.blockCurrentTargetConfirmation = true;
+    sequence.skipped += 1;
+    if (sequence.skipped >= FILTER_SEQUENCE_MAX_SKIPS) {
+      this.pauseFilterSequence(`已连续跳过 ${FILTER_SEQUENCE_MAX_SKIPS} 项，连续浏览已暂停`);
+      return true;
+    }
+    const typeLabel = MEDIA_TYPE_LABELS[mediaType] || '媒体';
+    this.panel.setStatus(`正在跳过${typeLabel}（${sequence.skipped}/${FILTER_SEQUENCE_MAX_SKIPS}）`);
+    this.filterSkipTimer = window.setTimeout(() => {
+      this.filterSkipTimer = 0;
+      this.continueFilterSequence(sequence);
+    }, FILTER_SKIP_DELAY_MS);
+    return true;
+  }
+
+  continueFilterSequence(sequence) {
+    if (!this.isFilterSequenceCurrent(sequence)) return;
+    if (this.hasFilterSequenceTimedOut(sequence)) {
+      this.pauseFilterSequence('筛选跳过超过总时限，连续浏览已暂停');
+      return;
+    }
+    this.navigateOnce(sequence.direction, true, sequence);
+  }
+
+  startFilterSequence(direction) {
+    this.cancelFilterSequence();
+    this.filterSequenceId += 1;
+    this.filterSequence = {
+      id: this.filterSequenceId,
+      direction,
+      filter: this.settings.mediaFilter,
+      startedAt: Date.now(),
+      skipped: 0,
+    };
+    return this.filterSequence;
+  }
+
+  isFilterSequenceCurrent(sequence) {
+    return Boolean(sequence
+      && this.filterSequence === sequence
+      && sequence.id === this.filterSequenceId
+      && sequence.filter === this.settings.mediaFilter
+      && sequence.direction === this.getAutomaticDirection()
+      && this.active
+      && !this.paused
+      && !this.destroyed);
+  }
+
+  hasFilterSequenceTimedOut(sequence) {
+    return Date.now() - sequence.startedAt >= FILTER_SEQUENCE_TIMEOUT_MS;
+  }
+
+  cancelFilterSequence() {
+    this.filterSkipTimer = clearTimeoutId(this.filterSkipTimer);
+    this.filterSequence = undefined;
+  }
+
+  takeOverFilterSequence() {
+    if (!this.filterSequence && !this.blockCurrentTargetConfirmation) return;
+    this.cancelFilterSequence();
+    this.filterSequenceId += 1;
+    this.blockCurrentTargetConfirmation = false;
+    this.confirmCurrentMediaTarget();
+  }
+
+  pauseFilterSequence(message) {
+    this.cancelFilterSequence();
+    this.filterSequenceId += 1;
+    this.paused = true;
+    this.clearTimer();
+    this.panel.render(this.viewState());
+    this.panel.setStatus(message);
   }
 
   releaseMediaListeners() {
@@ -233,6 +357,12 @@ export class ViewerSession {
   clearTimer() {
     this.timerId = clearTimeoutId(this.timerId);
     this.countdownId = clearIntervalId(this.countdownId);
+  }
+
+  completeNavigationAttempt() {
+    this.navigationPollTimer = clearTimeoutId(this.navigationPollTimer);
+    this.navigationAttemptId += 1;
+    this.isNavigating = false;
   }
 
   canRunPhotoTimer() {
@@ -249,7 +379,7 @@ export class ViewerSession {
   }
 
   scheduleForCurrentMedia(forceRestart = false) {
-    if (this.destroyed || !this.currentMedia) return;
+    if (this.destroyed || !this.currentMedia || this.blockCurrentTargetConfirmation) return;
     if (forceRestart) this.clearTimer();
 
     const automaticDirection = this.getAutomaticDirection();
@@ -302,6 +432,7 @@ export class ViewerSession {
   }
 
   toggleContinuous() {
+    this.takeOverFilterSequence();
     this.active = !this.active;
     if (this.active) this.paused = false;
     this.settings = updateSettings(this.settings, { continuousEnabled: this.active });
@@ -311,6 +442,12 @@ export class ViewerSession {
 
   togglePause() {
     if (!this.active) return;
+    if (this.paused) {
+      this.blockCurrentTargetConfirmation = false;
+      this.confirmCurrentMediaTarget();
+    } else {
+      this.takeOverFilterSequence();
+    }
     this.paused = !this.paused;
     this.panel.render(this.viewState());
     this.scheduleForCurrentMedia(true);
@@ -323,7 +460,15 @@ export class ViewerSession {
   }
 
   setBrowseDirection(direction) {
+    this.takeOverFilterSequence();
     this.settings = updateSettings(this.settings, { browseDirection: direction });
+    this.panel.render(this.viewState());
+    this.scheduleForCurrentMedia(true);
+  }
+
+  setMediaFilter(filter) {
+    this.takeOverFilterSequence();
+    this.settings = updateSettings(this.settings, { mediaFilter: filter });
     this.panel.render(this.viewState());
     this.scheduleForCurrentMedia(true);
   }
@@ -334,11 +479,41 @@ export class ViewerSession {
   }
 
   navigate(direction, automatic) {
+    if (this.destroyed) return;
+    if (automatic && (!this.active || this.paused)) return;
+
+    if (!automatic) {
+      this.takeOverFilterSequence();
+      this.navigateOnce(direction, false);
+      return;
+    }
+    if (this.settings.mediaFilter === 'all') {
+      this.cancelFilterSequence();
+      this.navigateOnce(direction, true);
+      return;
+    }
+
+    const sequence = this.startFilterSequence(direction);
+    this.navigateOnce(direction, true, sequence);
+  }
+
+  navigateOnce(direction, automatic, filterSequence) {
     if (this.destroyed || this.isNavigating) return;
     if (automatic && (!this.active || this.paused)) return;
+    if (filterSequence && !this.isFilterSequenceCurrent(filterSequence)) return;
+    if (filterSequence && this.hasFilterSequenceTimedOut(filterSequence)) {
+      this.pauseFilterSequence('筛选跳过超过总时限，连续浏览已暂停');
+      return;
+    }
     if (!getNavigationButton(this.viewer, direction)) {
-      if (automatic) this.finish(direction > 0 ? '已到当前媒体末尾' : '已到当前媒体开头');
-      else this.panel.setStatus(direction > 0 ? '没有可用的下一项' : '没有可用的上一项');
+      if (automatic) {
+        const message = filterSequence
+          ? (direction > 0 ? '已到当前媒体末尾，未找到更多匹配媒体' : '已到当前媒体开头，未找到更多匹配媒体')
+          : (direction > 0 ? '已到当前媒体末尾' : '已到当前媒体开头');
+        this.finish(message);
+      } else {
+        this.panel.setStatus(direction > 0 ? '没有可用的下一项' : '没有可用的上一项');
+      }
       this.panel.render(this.viewState());
       return;
     }
@@ -352,33 +527,52 @@ export class ViewerSession {
     if (!dispatchNavigation(this.viewer, direction)) {
       this.clearPendingNavigation();
       this.isNavigating = false;
-      this.panel.setStatus('官方切换控件未触发');
+      if (filterSequence) this.pauseFilterSequence('官方切换控件未触发，连续浏览已暂停');
+      else this.panel.setStatus('官方切换控件未触发');
       this.panel.render(this.viewState());
       return;
     }
 
+    const attemptId = this.navigationAttemptId + 1;
+    this.navigationAttemptId = attemptId;
     const startedAt = Date.now();
     const poll = () => {
-      if (this.destroyed) return;
+      if (this.destroyed || attemptId !== this.navigationAttemptId) return;
       const media = findActiveMedia(this.viewer);
       const after = mediaFingerprint(media);
       if (media && after !== before) {
         this.bindMedia(media, after);
         return;
       }
+      if (filterSequence
+        && this.isFilterSequenceCurrent(filterSequence)
+        && this.hasFilterSequenceTimedOut(filterSequence)) {
+        this.clearPendingNavigation();
+        this.completeNavigationAttempt();
+        this.pauseFilterSequence('筛选跳过超过总时限，连续浏览已暂停');
+        return;
+      }
       if (Date.now() - startedAt >= NAVIGATION_TIMEOUT_MS) {
         this.clearPendingNavigation();
-        this.isNavigating = false;
-        this.panel.setStatus('媒体未变化，请执行调试检查');
+        this.completeNavigationAttempt();
+        if (filterSequence) {
+          if (this.isFilterSequenceCurrent(filterSequence)) {
+            this.pauseFilterSequence('媒体未变化，筛选已暂停');
+          }
+        } else {
+          this.panel.setStatus('媒体未变化，请执行调试检查');
+        }
         this.panel.render(this.viewState());
         return;
       }
-      window.setTimeout(poll, NAVIGATION_POLL_MS);
+      this.navigationPollTimer = window.setTimeout(poll, NAVIGATION_POLL_MS);
     };
-    window.setTimeout(poll, NAVIGATION_POLL_MS);
+    this.navigationPollTimer = window.setTimeout(poll, NAVIGATION_POLL_MS);
   }
 
   finish(message) {
+    this.cancelFilterSequence();
+    this.filterSequenceId += 1;
     this.active = false;
     this.paused = false;
     this.settings = updateSettings(this.settings, { continuousEnabled: false });
@@ -391,6 +585,8 @@ export class ViewerSession {
     if (this.destroyed) return;
     this.destroyed = true;
     this.clearTimer();
+    this.cancelFilterSequence();
+    this.completeNavigationAttempt();
     clearTimeoutId(this.refreshTimer);
     clearTimeoutId(this.interactionTimer);
     this.targetTracker.destroy();
