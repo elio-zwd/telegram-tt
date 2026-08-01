@@ -6,6 +6,7 @@ on:
       - build/tampermonkey-web-k-v1-assembly-base
     types:
       - opened
+      - synchronize
 
 permissions:
   contents: write
@@ -32,16 +33,24 @@ jobs:
         run: |
           set -euo pipefail
           decode() {
-            local input="$1"
-            local output="$2"
+            local output="$1"
+            shift
             mkdir -p "$(dirname "$output")"
-            base64 --decode "$input" | gzip -d > "$output"
+            cat "$@" | base64 --decode | gzip -d > "$output"
           }
-          decode .build-input/viewer-session.js.gz.b64 tampermonkey/src/web-k/features/continuous-browsing/viewer-session.js
-          decode .build-input/control-panel.js.gz.b64 tampermonkey/src/web-k/features/control-panel/control-panel.js
-          decode .build-input/verify-web-k-userscript.mjs.gz.b64 tampermonkey/build/verify-web-k-userscript.mjs
-          decode .build-input/README.md.gz.b64 tampermonkey/README.md
-          decode .build-input/tampermonkey-web-k-v1-completion.md.gz.b64 docs/tampermonkey-web-k-v1-completion.md
+          decode tampermonkey/src/web-k/features/continuous-browsing/viewer-session.js \
+            .build-input/viewer-session.part1.b64 \
+            .build-input/viewer-session.part2.b64
+          decode tampermonkey/src/web-k/features/control-panel/control-panel.js \
+            .build-input/control-panel.js.gz.b64
+          decode tampermonkey/build/verify-web-k-userscript.mjs \
+            .build-input/verifier.part1.b64 \
+            .build-input/verifier.part2.b64
+          decode tampermonkey/README.md \
+            .build-input/readme.part1.b64 \
+            .build-input/readme.part2.b64
+          decode docs/tampermonkey-web-k-v1-completion.md \
+            .build-input/tampermonkey-web-k-v1-completion.md.gz.b64
 
       - name: 安装依赖
         run: npm ci
