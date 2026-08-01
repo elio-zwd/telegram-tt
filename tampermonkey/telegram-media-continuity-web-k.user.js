@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web K 媒体续播（兼容验证版）
 // @namespace    telegram-air/media-continuity
-// @version      0.4.0-k7
+// @version      0.4.0-k8
 // @description  为 Telegram Web K 提供图片和视频连续浏览能力
 // @match        https://web.telegram.org/k/*
 // @run-at       document-idle
@@ -1539,7 +1539,7 @@
 	}
 	//#endregion
 	//#region tampermonkey/src/web-k/version.js
-	var WEB_K_VERSION = "0.4.0-k7";
+	var WEB_K_VERSION = "0.4.0-k8";
 	//#endregion
 	//#region tampermonkey/src/web-k/features/debug/debug-api.js
 	function describeLastConfirmedTarget() {
@@ -1885,6 +1885,70 @@
 		});
 	}
 	//#endregion
+	//#region tampermonkey/src/web-k/features/shortcuts/keyboard-shortcuts.js
+	var EDITABLE_TARGET_SELECTOR = [
+		"input",
+		"textarea",
+		"select",
+		"[contenteditable]:not([contenteditable=\"false\"])",
+		"[role=\"textbox\"]"
+	].join(", ");
+	var SHORTCUT_ACTIONS = Object.freeze({
+		toggleContinuous: "toggle-continuous",
+		togglePause: "toggle-pause"
+	});
+	function createKeyboardShortcuts({ viewer, isViewerVisible, onToggleContinuous, onTogglePause }) {
+		let destroyed = false;
+		function handleKeyDown(event) {
+			if (destroyed || event.defaultPrevented || event.repeat || event.isComposing) return;
+			if (event.ctrlKey || event.altKey || event.metaKey) return;
+			if (!viewer.isConnected || !isViewerVisible()) return;
+			if (isEditableEventTarget(event)) return;
+			const action = getShortcutAction(event);
+			if (!action) return;
+			event.preventDefault();
+			event.stopPropagation();
+			if (action === SHORTCUT_ACTIONS.togglePause) onTogglePause();
+			else onToggleContinuous();
+		}
+		window.addEventListener("keydown", handleKeyDown, true);
+		return Object.freeze({ destroy() {
+			if (destroyed) return;
+			destroyed = true;
+			window.removeEventListener("keydown", handleKeyDown, true);
+		} });
+	}
+	function getShortcutAction(event) {
+		if (event.code === "Space" || event.key === " " || event.key === "Spacebar") return SHORTCUT_ACTIONS.togglePause;
+		if (event.code === "KeyA" || event.key.toLowerCase() === "a") return SHORTCUT_ACTIONS.toggleContinuous;
+	}
+	function isEditableEventTarget(event) {
+		return (typeof event.composedPath === "function" ? event.composedPath() : [event.target]).some((target) => target instanceof Element && target.matches(EDITABLE_TARGET_SELECTOR));
+	}
+	//#endregion
+	//#region tampermonkey/src/web-k/features/shortcuts/index.js
+	function createShortcutSession(session, { isViewerVisible }) {
+		let destroyed = false;
+		const shortcuts = createKeyboardShortcuts({
+			viewer: session.viewer,
+			isViewerVisible,
+			onToggleContinuous: () => session.toggleContinuous(),
+			onTogglePause: () => session.togglePause()
+		});
+		return Object.freeze({
+			viewer: session.viewer,
+			requestRefresh: () => session.requestRefresh(),
+			createCloseSnapshot: () => session.createCloseSnapshot(),
+			getLastConfirmedMediaTarget: () => session.getLastConfirmedMediaTarget(),
+			destroy() {
+				if (destroyed) return;
+				destroyed = true;
+				shortcuts.destroy();
+				session.destroy();
+			}
+		});
+	}
+	//#endregion
 	//#region tampermonkey/src/web-k/app.js
 	var CONTROL_PANEL_HOST_ID = "telegram-media-continuity-host";
 	function createApp() {
@@ -1893,10 +1957,12 @@
 			captureSourceTarget: (event) => captureSourceProbe(event, CONTROL_PANEL_HOST_ID),
 			clearCloseProbe: debugFeature.clearCloseProbe,
 			clearLocationTimers,
-			createSession: (viewer) => createViewerSession(viewer, {
-				controlPanelHostId: CONTROL_PANEL_HOST_ID,
-				createControlPanel
-			}),
+			createSession: (viewer) => {
+				return createShortcutSession(createViewerSession(viewer, {
+					controlPanelHostId: CONTROL_PANEL_HOST_ID,
+					createControlPanel
+				}), { isViewerVisible: () => isElementVisible(viewer) });
+			},
 			findMediaViewer,
 			installDebugApi: debugFeature.installDebugApi,
 			isElementVisible,

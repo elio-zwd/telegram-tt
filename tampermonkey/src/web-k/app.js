@@ -3,6 +3,7 @@ import { captureSourceProbe, clearLocationTimers, locateMessageAfterClose } from
 import { createViewerSession } from './features/continuous-browsing/index.js';
 import { createControlPanel } from './features/control-panel/index.js';
 import { createDebugFeature } from './features/debug/index.js';
+import { createShortcutSession } from './features/shortcuts/index.js';
 import { isElementVisible } from './platform/dom.js';
 import { findMediaViewer } from './platform/media-viewer.js';
 
@@ -14,10 +15,15 @@ export function createApp() {
     captureSourceTarget: (event) => captureSourceProbe(event, CONTROL_PANEL_HOST_ID),
     clearCloseProbe: debugFeature.clearCloseProbe,
     clearLocationTimers,
-    createSession: (viewer) => createViewerSession(viewer, {
-      controlPanelHostId: CONTROL_PANEL_HOST_ID,
-      createControlPanel,
-    }),
+    createSession: (viewer) => {
+      const viewerSession = createViewerSession(viewer, {
+        controlPanelHostId: CONTROL_PANEL_HOST_ID,
+        createControlPanel,
+      });
+      return createShortcutSession(viewerSession, {
+        isViewerVisible: () => isElementVisible(viewer),
+      });
+    },
     findMediaViewer,
     installDebugApi: debugFeature.installDebugApi,
     isElementVisible,
