@@ -35,6 +35,8 @@ const REQUIRED_MODULE_PATHS = Object.freeze([
   'features/debug/debug-api.js',
   'features/debug/probes.js',
   'features/debug/index.js',
+  'features/shortcuts/keyboard-shortcuts.js',
+  'features/shortcuts/index.js',
 ]);
 const CORE_FORBIDDEN_TOKENS = Object.freeze([
   '.media-viewer-',
@@ -140,38 +142,76 @@ function verifyModuleBoundaries(modules) {
     (viewerSession.match(/this\.navigate\((?:this\.getAutomaticDirection\(\)|automaticDirection), true\)/g) || []).length >= 2,
     '图片和视频自动切换未统一使用自动方向',
   );
-  assertCondition(
-    viewerSession.includes("if (event.key === 'ArrowRight')"),
-    'ArrowRight 必须继续保持方向 1',
-  );
-  assertCondition(
-    viewerSession.includes('this.prepareNavigationTarget(1);'),
-    'ArrowRight 必须使用方向 1 准备关闭定位目标',
-  );
-  assertCondition(
-    viewerSession.includes("else if (event.key === 'ArrowLeft')"),
-    'ArrowLeft 必须继续保持方向 -1',
-  );
-  assertCondition(
-    viewerSession.includes('this.prepareNavigationTarget(-1);'),
-    'ArrowLeft 必须使用方向 -1 准备关闭定位目标',
-  );
-  assertCondition(
-    viewerSession.includes('this.prepareNavigationTarget(direction);'),
-    '导航前必须使用实际方向准备关闭定位目标',
-  );
-  assertCondition(
-    viewerSession.includes('const FILTER_SEQUENCE_MAX_SKIPS = 50;'),
-    '媒体筛选缺少明确最大跳过次数',
-  );
-  assertCondition(
-    viewerSession.includes('const FILTER_SEQUENCE_TIMEOUT_MS = 15000;'),
-    '媒体筛选缺少明确总超时',
-  );
+  assertCondition(viewerSession.includes("if (event.key === 'ArrowRight')"), 'ArrowRight 必须继续保持方向 1');
+  assertCondition(viewerSession.includes('this.prepareNavigationTarget(1);'), 'ArrowRight 必须使用方向 1 准备关闭定位目标');
+  assertCondition(viewerSession.includes("else if (event.key === 'ArrowLeft')"), 'ArrowLeft 必须继续保持方向 -1');
+  assertCondition(viewerSession.includes('this.prepareNavigationTarget(-1);'), 'ArrowLeft 必须使用方向 -1 准备关闭定位目标');
+  assertCondition(viewerSession.includes('this.prepareNavigationTarget(direction);'), '导航前必须使用实际方向准备关闭定位目标');
+  assertCondition(viewerSession.includes('const FILTER_SEQUENCE_MAX_SKIPS = 50;'), '媒体筛选缺少明确最大跳过次数');
+  assertCondition(viewerSession.includes('const FILTER_SEQUENCE_TIMEOUT_MS = 15000;'), '媒体筛选缺少明确总超时');
   assertCondition(viewerSession.includes('filterSequenceId'), '媒体筛选缺少序列隔离');
   assertCondition(viewerSession.includes('blockCurrentTargetConfirmation'), '跳过序列未隔离关闭定位确认');
   assertCondition(viewerSession.includes('takeOverFilterSequence()'), '手动操作未提供筛选序列接管入口');
   assertCondition(viewerSession.includes("this.settings.mediaFilter === 'all'"), '全部媒体模式未保持直接自动导航');
+  assertCondition(
+    viewerSession.includes('togglePause()') && viewerSession.includes('this.takeOverFilterSequence();'),
+    '暂停入口必须继续取消媒体筛选序列',
+  );
+  assertCondition(
+    viewerSession.includes('toggleContinuous()') && viewerSession.includes('continuousEnabled: this.active'),
+    '连续浏览开关必须继续使用原设置持久化路径',
+  );
+
+  const keyboardShortcuts = modules.get('features/shortcuts/keyboard-shortcuts.js');
+  assertCondition(!keyboardShortcuts.includes('../../platform/'), '快捷键模块不得依赖 platform 模块');
+  assertCondition(!keyboardShortcuts.includes('document.querySelector('), '快捷键模块不得查询 Telegram 页面 DOM');
+  for (const editableToken of ['input', 'textarea', 'select', '[contenteditable]', '[role="textbox"]']) {
+    assertCondition(keyboardShortcuts.includes(editableToken), `快捷键模块缺少输入保护：${editableToken}`);
+  }
+  assertCondition(
+    keyboardShortcuts.includes('[contenteditable]:not([contenteditable="false"])'),
+    '快捷键模块必须排除 contenteditable=false',
+  );
+  for (const guardToken of [
+    'event.defaultPrevented',
+    'event.repeat',
+    'event.isComposing',
+    'event.ctrlKey',
+    'event.altKey',
+    'event.metaKey',
+    '!viewer.isConnected',
+    '!isViewerVisible()',
+  ]) {
+    assertCondition(keyboardShortcuts.includes(guardToken), `快捷键模块缺少触发保护：${guardToken}`);
+  }
+  assertCondition(keyboardShortcuts.includes("event.code === 'Space'"), '快捷键模块缺少 Space');
+  assertCondition(keyboardShortcuts.includes("event.code === 'KeyA'"), '快捷键模块缺少 A');
+  for (const forbiddenKey of ['ArrowLeft', 'ArrowRight', 'Escape', 'KeyD']) {
+    assertCondition(!keyboardShortcuts.includes(forbiddenKey), `快捷键模块不得处理 ${forbiddenKey}`);
+  }
+  assertCondition(
+    (keyboardShortcuts.match(/event\.preventDefault\(\);/g) || []).length === 1,
+    '快捷键模块只能在统一命中入口阻止默认行为',
+  );
+  assertCondition(
+    (keyboardShortcuts.match(/event\.stopPropagation\(\);/g) || []).length === 1,
+    '快捷键模块只能在统一命中入口停止传播',
+  );
+  assertCondition(
+    keyboardShortcuts.includes("window.removeEventListener('keydown', handleKeyDown, true);"),
+    '快捷键销毁时必须移除 keydown listener',
+  );
+
+  const shortcuts = modules.get('features/shortcuts/index.js');
+  assertCondition(shortcuts.includes('session.togglePause()'), '快捷键会话必须调用 ViewerSession.togglePause()');
+  assertCondition(shortcuts.includes('session.toggleContinuous()'), '快捷键会话必须调用 ViewerSession.toggleContinuous()');
+  assertCondition(shortcuts.includes('requestRefresh: () => session.requestRefresh()'), '快捷键会话未转发 requestRefresh()');
+  assertCondition(shortcuts.includes('createCloseSnapshot: () => session.createCloseSnapshot()'), '快捷键会话未转发 createCloseSnapshot()');
+  assertCondition(
+    shortcuts.includes('getLastConfirmedMediaTarget: () => session.getLastConfirmedMediaTarget()'),
+    '快捷键会话未转发 getLastConfirmedMediaTarget()',
+  );
+  assertCondition(shortcuts.includes('shortcuts.destroy();') && shortcuts.includes('session.destroy();'), '快捷键会话销毁顺序不完整');
 
   const debugApi = modules.get('features/debug/debug-api.js');
   const publicApiNames = [
@@ -198,10 +238,12 @@ function verifyModuleBoundaries(modules) {
     './features/close-position/index.js',
     './features/control-panel/index.js',
     './features/debug/index.js',
+    './features/shortcuts/index.js',
   ]) {
     assertCondition(app.includes(featurePath), `应用装配层缺少功能模块依赖：${featurePath}`);
   }
   assertCondition(app.includes("from './core/lifecycle.js'"), '应用装配层未装配 lifecycle');
+  assertCondition(app.includes('createShortcutSession(viewerSession'), '应用装配层未组合快捷键会话');
 
   const entry = modules.get('entry.js');
   assertCondition(entry.includes("from './app.js'"), 'entry.js 未从 app.js 启动');
@@ -227,10 +269,7 @@ async function verifyGeneratedOutput() {
     generated.slice(metadataEndIndex + '// ==/UserScript=='.length).trimStart().startsWith(GENERATED_NOTICE),
     '生成文件缺少禁止手工修改说明',
   );
-  assertCondition(
-    (generated.match(/\/\/ ==UserScript==/g) || []).length === 1,
-    '生成文件包含重复 userscript metadata',
-  );
+  assertCondition((generated.match(/\/\/ ==UserScript==/g) || []).length === 1, '生成文件包含重复 userscript metadata');
 
   const metadataBlock = generated.slice(0, metadataEndIndex + '// ==/UserScript=='.length);
   const matchLines = metadataBlock.match(/^\/\/ @match\s+.+$/gm) || [];
@@ -249,24 +288,21 @@ async function verifyGeneratedOutput() {
   assertCondition(/version:\s*WEB_K_VERSION\b/.test(generated), '调试 API 未使用运行时版本常量');
   assertCondition(generated.includes('browseDirection'), '生成文件缺少浏览方向设置');
   assertCondition(generated.includes('mediaFilter'), '生成文件缺少媒体类型筛选设置');
+  assertCondition(generated.includes('createKeyboardShortcuts'), '生成文件缺少快捷键功能');
+  assertCondition(generated.includes('toggle-continuous'), '生成文件缺少连续浏览开关快捷键');
+  assertCondition(generated.includes('toggle-pause'), '生成文件缺少暂停快捷键');
 
   assertCondition(!/\bimport\s*\(/.test(generated), '生成文件禁止运行时动态 import');
   assertCondition(!/^\s*(?:import|export)\s/m.test(generated), '生成文件仍包含 ES Module 语句');
   assertCondition(!/sourceMappingURL/i.test(generated), '生成文件禁止包含 sourcemap 引用');
-  assertCondition(
-    /\(\(\)\s*=>\s*\{|\(function\s*\(\)\s*\{/.test(generated),
-    '生成文件未检测到 IIFE 包装',
-  );
+  assertCondition(/\(\(\)\s*=>\s*\{|\(function\s*\(\)\s*\{/.test(generated), '生成文件未检测到 IIFE 包装');
 
   const unexpectedOutputs = topLevelEntries
     .filter((entry) => entry.isFile()
       && entry.name.startsWith('telegram-media-continuity-web-k')
       && entry.name !== OUTPUT_FILE_NAME)
     .map((entry) => entry.name);
-  assertCondition(
-    unexpectedOutputs.length === 0,
-    `检测到额外 Web K 构建产物：${unexpectedOutputs.join(', ')}`,
-  );
+  assertCondition(unexpectedOutputs.length === 0, `检测到额外 Web K 构建产物：${unexpectedOutputs.join(', ')}`);
 
   verifyModuleBoundaries(modules);
 
