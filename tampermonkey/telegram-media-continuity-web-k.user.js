@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web K 媒体续播（兼容验证版）
 // @namespace    telegram-air/media-continuity
-// @version      0.4.0-k6
+// @version      0.4.0-k7
 // @description  为 Telegram Web K 提供图片和视频连续浏览能力
 // @match        https://web.telegram.org/k/*
 // @run-at       document-idle
@@ -232,6 +232,10 @@
 			}
 		}
 		return best;
+	}
+	function getMediaType(media) {
+		if (media instanceof HTMLImageElement) return "images";
+		if (media instanceof HTMLVideoElement) return "videos";
 	}
 	function getMediaNodeId(media) {
 		if (!mediaNodeIds.has(media)) {
@@ -769,10 +773,16 @@
 		3e4
 	];
 	var BROWSE_DIRECTIONS = Object.freeze(["forward", "backward"]);
+	var MEDIA_FILTERS = Object.freeze([
+		"all",
+		"images",
+		"videos"
+	]);
 	var DEFAULT_SETTINGS = Object.freeze({
 		continuousEnabled: false,
 		photoDurationMs: 5e3,
 		browseDirection: "forward",
+		mediaFilter: "all",
 		panelCollapsed: false
 	});
 	function isPlainObject(value) {
@@ -784,6 +794,7 @@
 			continuousEnabled: typeof source.continuousEnabled === "boolean" ? source.continuousEnabled : DEFAULT_SETTINGS.continuousEnabled,
 			photoDurationMs: DURATIONS.includes(source.photoDurationMs) ? source.photoDurationMs : DEFAULT_SETTINGS.photoDurationMs,
 			browseDirection: BROWSE_DIRECTIONS.includes(source.browseDirection) ? source.browseDirection : DEFAULT_SETTINGS.browseDirection,
+			mediaFilter: MEDIA_FILTERS.includes(source.mediaFilter) ? source.mediaFilter : DEFAULT_SETTINGS.mediaFilter,
 			panelCollapsed: typeof source.panelCollapsed === "boolean" ? source.panelCollapsed : DEFAULT_SETTINGS.panelCollapsed
 		};
 	}
@@ -865,6 +876,13 @@
 	var REFRESH_DELAY_MS = 80;
 	var NAVIGATION_POLL_MS = 100;
 	var COUNTDOWN_REFRESH_MS = 200;
+	var FILTER_SKIP_DELAY_MS = 80;
+	var FILTER_SEQUENCE_MAX_SKIPS = 50;
+	var FILTER_SEQUENCE_TIMEOUT_MS = 15e3;
+	var MEDIA_TYPE_LABELS = Object.freeze({
+		images: "图片",
+		videos: "视频"
+	});
 	var ViewerSession = class {
 		constructor(viewer, { controlPanelHostId, createControlPanel }) {
 			this.viewer = viewer;
@@ -883,6 +901,12 @@
 			this.countdownId = 0;
 			this.refreshTimer = 0;
 			this.interactionTimer = 0;
+			this.navigationPollTimer = 0;
+			this.navigationAttemptId = 0;
+			this.filterSkipTimer = 0;
+			this.filterSequenceId = 0;
+			this.filterSequence = void 0;
+			this.blockCurrentTargetConfirmation = false;
 			this.targetTracker = new MediaTargetTracker({ getCurrentFingerprint: () => this.currentFingerprint });
 			this.panel = createControlPanel({
 				hostId: controlPanelHostId,
@@ -891,6 +915,7 @@
 				onNavigate: (direction, automatic) => this.navigate(direction, automatic),
 				onSetPhotoDuration: (duration) => this.setPhotoDuration(duration),
 				onSetBrowseDirection: (direction) => this.setBrowseDirection(direction),
+				onSetMediaFilter: (filter) => this.setMediaFilter(filter),
 				onSetPanelCollapsed: (collapsed) => this.setPanelCollapsed(collapsed)
 			});
 			this.observer = new MutationObserver(() => this.requestRefresh());
@@ -922,12 +947,19 @@
 			window.addEventListener("pointercancel", this.handlePointerUp, true);
 			this.handleViewerPointerDown = (event) => {
 				const direction = getNavigationDirectionFromTarget(this.viewer, event.target);
-				if (direction) this.prepareNavigationTarget(direction);
+				if (!direction) return;
+				this.takeOverFilterSequence();
+				this.prepareNavigationTarget(direction);
 			};
 			this.handleViewerKeyDown = (event) => {
 				if (event.repeat || !isElementVisible(this.viewer)) return;
-				if (event.key === "ArrowRight") this.prepareNavigationTarget(1);
-				else if (event.key === "ArrowLeft") this.prepareNavigationTarget(-1);
+				if (event.key === "ArrowRight") {
+					this.takeOverFilterSequence();
+					this.prepareNavigationTarget(1);
+				} else if (event.key === "ArrowLeft") {
+					this.takeOverFilterSequence();
+					this.prepareNavigationTarget(-1);
+				}
 			};
 			this.viewer.addEventListener("pointerdown", this.handleViewerPointerDown, true);
 			window.addEventListener("keydown", this.handleViewerKeyDown, true);
@@ -942,6 +974,7 @@
 				collapsed: this.settings.panelCollapsed,
 				photoDurationMs: this.settings.photoDurationMs,
 				browseDirection: this.settings.browseDirection,
+				mediaFilter: this.settings.mediaFilter,
 				canPrevious: availability.previous,
 				canNext: availability.next
 			};
@@ -978,6 +1011,7 @@
 			this.targetTracker.clearPendingNavigation();
 		}
 		confirmCurrentMediaTarget() {
+			if (this.blockCurrentTargetConfirmation) return false;
 			return this.targetTracker.confirmCurrentMediaTarget(this.currentMedia);
 		}
 		createCloseSnapshot() {
@@ -989,9 +1023,10 @@
 		bindMedia(media, nextFingerprint) {
 			this.clearTimer();
 			this.releaseMediaListeners();
+			this.completeNavigationAttempt();
 			this.currentMedia = media;
 			this.currentFingerprint = nextFingerprint;
-			this.isNavigating = false;
+			this.blockCurrentTargetConfirmation = false;
 			const add = (target, type, listener, options) => {
 				addEventListenerCleanup(this.mediaCleanup, target, type, listener, options);
 			};
@@ -1022,11 +1057,7 @@
 					this.confirmCurrentMediaTarget();
 					this.scheduleForCurrentMedia(true);
 				}, { once: true });
-				add(media, "error", () => {
-					this.clearTimer();
-					this.clearPendingNavigation();
-					this.panel.setStatus("图片加载失败，请手动处理");
-				}, { once: true });
+				add(media, "error", () => this.handleMediaError("图片加载失败，请手动处理"), { once: true });
 			} else if (media instanceof HTMLVideoElement) {
 				const confirmVideo = () => this.confirmCurrentMediaTarget();
 				add(media, "loadedmetadata", confirmVideo);
@@ -1034,16 +1065,97 @@
 				add(media, "canplay", confirmVideo);
 				add(media, "playing", confirmVideo);
 				add(media, "ended", () => {
-					if (this.active && !this.paused) this.navigate(this.getAutomaticDirection(), true);
+					if (this.active && !this.paused && !this.blockCurrentTargetConfirmation) this.navigate(this.getAutomaticDirection(), true);
 				});
-				add(media, "error", () => {
-					this.clearPendingNavigation();
-					this.panel.setStatus("视频播放失败，请手动处理");
-				});
+				add(media, "error", () => this.handleMediaError("视频播放失败，请手动处理"));
 			}
 			this.panel.render(this.viewState());
+			if (this.handleFilterSequenceForCurrentMedia()) return;
 			this.confirmCurrentMediaTarget();
 			this.scheduleForCurrentMedia(true);
+		}
+		handleMediaError(message) {
+			if (this.blockCurrentTargetConfirmation) return;
+			this.clearTimer();
+			this.clearPendingNavigation();
+			this.panel.setStatus(message);
+		}
+		handleFilterSequenceForCurrentMedia() {
+			const sequence = this.filterSequence;
+			if (!this.isFilterSequenceCurrent(sequence)) return false;
+			if (this.hasFilterSequenceTimedOut(sequence)) {
+				this.blockCurrentTargetConfirmation = true;
+				this.pauseFilterSequence("筛选跳过超过总时限，连续浏览已暂停");
+				return true;
+			}
+			const mediaType = getMediaType(this.currentMedia);
+			if (!mediaType) {
+				this.blockCurrentTargetConfirmation = true;
+				this.pauseFilterSequence("无法可靠判断媒体类型，连续浏览已暂停");
+				return true;
+			}
+			if (mediaType === sequence.filter) {
+				this.cancelFilterSequence();
+				return false;
+			}
+			this.blockCurrentTargetConfirmation = true;
+			sequence.skipped += 1;
+			if (sequence.skipped >= FILTER_SEQUENCE_MAX_SKIPS) {
+				this.pauseFilterSequence(`已连续跳过 ${FILTER_SEQUENCE_MAX_SKIPS} 项，连续浏览已暂停`);
+				return true;
+			}
+			const typeLabel = MEDIA_TYPE_LABELS[mediaType] || "媒体";
+			this.panel.setStatus(`正在跳过${typeLabel}（${sequence.skipped}/${FILTER_SEQUENCE_MAX_SKIPS}）`);
+			this.filterSkipTimer = window.setTimeout(() => {
+				this.filterSkipTimer = 0;
+				this.continueFilterSequence(sequence);
+			}, FILTER_SKIP_DELAY_MS);
+			return true;
+		}
+		continueFilterSequence(sequence) {
+			if (!this.isFilterSequenceCurrent(sequence)) return;
+			if (this.hasFilterSequenceTimedOut(sequence)) {
+				this.pauseFilterSequence("筛选跳过超过总时限，连续浏览已暂停");
+				return;
+			}
+			this.navigateOnce(sequence.direction, true, sequence);
+		}
+		startFilterSequence(direction) {
+			this.cancelFilterSequence();
+			this.filterSequenceId += 1;
+			this.filterSequence = {
+				id: this.filterSequenceId,
+				direction,
+				filter: this.settings.mediaFilter,
+				startedAt: Date.now(),
+				skipped: 0
+			};
+			return this.filterSequence;
+		}
+		isFilterSequenceCurrent(sequence) {
+			return Boolean(sequence && this.filterSequence === sequence && sequence.id === this.filterSequenceId && sequence.filter === this.settings.mediaFilter && sequence.direction === this.getAutomaticDirection() && this.active && !this.paused && !this.destroyed);
+		}
+		hasFilterSequenceTimedOut(sequence) {
+			return Date.now() - sequence.startedAt >= FILTER_SEQUENCE_TIMEOUT_MS;
+		}
+		cancelFilterSequence() {
+			this.filterSkipTimer = clearTimeoutId(this.filterSkipTimer);
+			this.filterSequence = void 0;
+		}
+		takeOverFilterSequence() {
+			if (!this.filterSequence && !this.blockCurrentTargetConfirmation) return;
+			this.cancelFilterSequence();
+			this.filterSequenceId += 1;
+			this.blockCurrentTargetConfirmation = false;
+			this.confirmCurrentMediaTarget();
+		}
+		pauseFilterSequence(message) {
+			this.cancelFilterSequence();
+			this.filterSequenceId += 1;
+			this.paused = true;
+			this.clearTimer();
+			this.panel.render(this.viewState());
+			this.panel.setStatus(message);
 		}
 		releaseMediaListeners() {
 			runCleanupList(this.mediaCleanup);
@@ -1052,11 +1164,16 @@
 			this.timerId = clearTimeoutId(this.timerId);
 			this.countdownId = clearIntervalId(this.countdownId);
 		}
+		completeNavigationAttempt() {
+			this.navigationPollTimer = clearTimeoutId(this.navigationPollTimer);
+			this.navigationAttemptId += 1;
+			this.isNavigating = false;
+		}
 		canRunPhotoTimer() {
 			return this.active && !this.paused && this.currentMedia instanceof HTMLImageElement && this.currentMedia.complete && this.currentMedia.naturalWidth > 0 && !document.hidden && document.hasFocus() && !this.hovered && !this.interacting && !this.isZoomed;
 		}
 		scheduleForCurrentMedia(forceRestart = false) {
-			if (this.destroyed || !this.currentMedia) return;
+			if (this.destroyed || !this.currentMedia || this.blockCurrentTargetConfirmation) return;
 			if (forceRestart) this.clearTimer();
 			const automaticDirection = this.getAutomaticDirection();
 			const automaticDirectionLabel = automaticDirection > 0 ? "下一项" : "上一项";
@@ -1095,6 +1212,7 @@
 			}, duration);
 		}
 		toggleContinuous() {
+			this.takeOverFilterSequence();
 			this.active = !this.active;
 			if (this.active) this.paused = false;
 			this.settings = updateSettings(this.settings, { continuousEnabled: this.active });
@@ -1103,6 +1221,10 @@
 		}
 		togglePause() {
 			if (!this.active) return;
+			if (this.paused) {
+				this.blockCurrentTargetConfirmation = false;
+				this.confirmCurrentMediaTarget();
+			} else this.takeOverFilterSequence();
 			this.paused = !this.paused;
 			this.panel.render(this.viewState());
 			this.scheduleForCurrentMedia(true);
@@ -1113,7 +1235,14 @@
 			this.scheduleForCurrentMedia(true);
 		}
 		setBrowseDirection(direction) {
+			this.takeOverFilterSequence();
 			this.settings = updateSettings(this.settings, { browseDirection: direction });
+			this.panel.render(this.viewState());
+			this.scheduleForCurrentMedia(true);
+		}
+		setMediaFilter(filter) {
+			this.takeOverFilterSequence();
+			this.settings = updateSettings(this.settings, { mediaFilter: filter });
 			this.panel.render(this.viewState());
 			this.scheduleForCurrentMedia(true);
 		}
@@ -1122,11 +1251,34 @@
 			this.panel.render(this.viewState());
 		}
 		navigate(direction, automatic) {
+			if (this.destroyed) return;
+			if (automatic && (!this.active || this.paused)) return;
+			if (!automatic) {
+				this.takeOverFilterSequence();
+				this.navigateOnce(direction, false);
+				return;
+			}
+			if (this.settings.mediaFilter === "all") {
+				this.cancelFilterSequence();
+				this.navigateOnce(direction, true);
+				return;
+			}
+			const sequence = this.startFilterSequence(direction);
+			this.navigateOnce(direction, true, sequence);
+		}
+		navigateOnce(direction, automatic, filterSequence) {
 			if (this.destroyed || this.isNavigating) return;
 			if (automatic && (!this.active || this.paused)) return;
+			if (filterSequence && !this.isFilterSequenceCurrent(filterSequence)) return;
+			if (filterSequence && this.hasFilterSequenceTimedOut(filterSequence)) {
+				this.pauseFilterSequence("筛选跳过超过总时限，连续浏览已暂停");
+				return;
+			}
 			if (!getNavigationButton(this.viewer, direction)) {
-				if (automatic) this.finish(direction > 0 ? "已到当前媒体末尾" : "已到当前媒体开头");
-				else this.panel.setStatus(direction > 0 ? "没有可用的下一项" : "没有可用的上一项");
+				if (automatic) {
+					const message = filterSequence ? direction > 0 ? "已到当前媒体末尾，未找到更多匹配媒体" : "已到当前媒体开头，未找到更多匹配媒体" : direction > 0 ? "已到当前媒体末尾" : "已到当前媒体开头";
+					this.finish(message);
+				} else this.panel.setStatus(direction > 0 ? "没有可用的下一项" : "没有可用的上一项");
 				this.panel.render(this.viewState());
 				return;
 			}
@@ -1138,31 +1290,44 @@
 			if (!dispatchNavigation(this.viewer, direction)) {
 				this.clearPendingNavigation();
 				this.isNavigating = false;
-				this.panel.setStatus("官方切换控件未触发");
+				if (filterSequence) this.pauseFilterSequence("官方切换控件未触发，连续浏览已暂停");
+				else this.panel.setStatus("官方切换控件未触发");
 				this.panel.render(this.viewState());
 				return;
 			}
+			const attemptId = this.navigationAttemptId + 1;
+			this.navigationAttemptId = attemptId;
 			const startedAt = Date.now();
 			const poll = () => {
-				if (this.destroyed) return;
+				if (this.destroyed || attemptId !== this.navigationAttemptId) return;
 				const media = findActiveMedia(this.viewer);
 				const after = mediaFingerprint(media);
 				if (media && after !== before) {
 					this.bindMedia(media, after);
 					return;
 				}
+				if (filterSequence && this.isFilterSequenceCurrent(filterSequence) && this.hasFilterSequenceTimedOut(filterSequence)) {
+					this.clearPendingNavigation();
+					this.completeNavigationAttempt();
+					this.pauseFilterSequence("筛选跳过超过总时限，连续浏览已暂停");
+					return;
+				}
 				if (Date.now() - startedAt >= NAVIGATION_TIMEOUT_MS) {
 					this.clearPendingNavigation();
-					this.isNavigating = false;
-					this.panel.setStatus("媒体未变化，请执行调试检查");
+					this.completeNavigationAttempt();
+					if (filterSequence) {
+						if (this.isFilterSequenceCurrent(filterSequence)) this.pauseFilterSequence("媒体未变化，筛选已暂停");
+					} else this.panel.setStatus("媒体未变化，请执行调试检查");
 					this.panel.render(this.viewState());
 					return;
 				}
-				window.setTimeout(poll, NAVIGATION_POLL_MS);
+				this.navigationPollTimer = window.setTimeout(poll, NAVIGATION_POLL_MS);
 			};
-			window.setTimeout(poll, NAVIGATION_POLL_MS);
+			this.navigationPollTimer = window.setTimeout(poll, NAVIGATION_POLL_MS);
 		}
 		finish(message) {
+			this.cancelFilterSequence();
+			this.filterSequenceId += 1;
 			this.active = false;
 			this.paused = false;
 			this.settings = updateSettings(this.settings, { continuousEnabled: false });
@@ -1174,6 +1339,8 @@
 			if (this.destroyed) return;
 			this.destroyed = true;
 			this.clearTimer();
+			this.cancelFilterSequence();
+			this.completeNavigationAttempt();
 			clearTimeoutId(this.refreshTimer);
 			clearTimeoutId(this.interactionTimer);
 			this.targetTracker.destroy();
@@ -1201,8 +1368,13 @@
 		forward: "正向",
 		backward: "反向"
 	});
+	var MEDIA_FILTER_LABELS = Object.freeze({
+		all: "图片和视频",
+		images: "仅图片",
+		videos: "仅视频"
+	});
 	var ControlPanel = class {
-		constructor({ hostId, onToggleContinuous, onTogglePause, onNavigate, onSetPhotoDuration, onSetBrowseDirection, onSetPanelCollapsed }) {
+		constructor({ hostId, onToggleContinuous, onTogglePause, onNavigate, onSetPhotoDuration, onSetBrowseDirection, onSetMediaFilter, onSetPanelCollapsed }) {
 			this.host = document.createElement("div");
 			this.host.id = hostId;
 			this.host.style.cssText = "position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:2147483646;pointer-events:none;";
@@ -1273,12 +1445,33 @@
           select { padding: 0 6px; }
           .status { min-width: 72px; max-width: 120px; }
         }
+        @media (max-width: 480px) {
+          .panel {
+            max-width: calc(100vw - 12px);
+            gap: 4px;
+            padding: 5px;
+          }
+          button, select {
+            min-height: 30px;
+            font-size: 12px;
+          }
+          .status {
+            order: 2;
+            flex: 1 0 100%;
+            min-width: 0;
+            max-width: calc(100vw - 32px);
+            text-align: center;
+          }
+        }
       </style>
       <div class="panel" role="toolbar" aria-label="Telegram Web K 连续媒体浏览">
         <button id="toggle" class="primary" type="button">连续浏览</button>
         <button id="pause" type="button">暂停</button>
         <button id="previous" type="button" aria-label="上一项">←</button>
         <button id="next" type="button" aria-label="下一项">→</button>
+        <select id="filter" aria-label="自动浏览媒体类型">
+          ${MEDIA_FILTERS.map((value) => `<option value="${value}">${MEDIA_FILTER_LABELS[value]}</option>`).join("")}
+        </select>
         <select id="direction" aria-label="自动浏览方向">
           ${BROWSE_DIRECTIONS.map((value) => `<option value="${value}">${BROWSE_DIRECTION_LABELS[value]}</option>`).join("")}
         </select>
@@ -1298,6 +1491,7 @@
 			this.previous = this.shadow.querySelector("#previous");
 			this.next = this.shadow.querySelector("#next");
 			this.status = this.shadow.querySelector("#status");
+			this.filter = this.shadow.querySelector("#filter");
 			this.direction = this.shadow.querySelector("#direction");
 			this.duration = this.shadow.querySelector("#duration");
 			for (const type of [
@@ -1311,6 +1505,7 @@
 			this.pause.addEventListener("click", onTogglePause);
 			this.previous.addEventListener("click", () => onNavigate(-1, false));
 			this.next.addEventListener("click", () => onNavigate(1, false));
+			this.filter.addEventListener("change", () => onSetMediaFilter(this.filter.value));
 			this.direction.addEventListener("change", () => onSetBrowseDirection(this.direction.value));
 			this.duration.addEventListener("change", () => onSetPhotoDuration(Number(this.duration.value)));
 			this.shadow.querySelector("#collapse").addEventListener("click", () => onSetPanelCollapsed(true));
@@ -1323,6 +1518,7 @@
 			this.pause.disabled = !state.active;
 			this.previous.disabled = !state.canPrevious;
 			this.next.disabled = !state.canNext;
+			this.filter.value = state.mediaFilter;
 			this.direction.value = state.browseDirection;
 			this.duration.value = String(state.photoDurationMs);
 			this.panel.hidden = state.collapsed;
@@ -1343,7 +1539,7 @@
 	}
 	//#endregion
 	//#region tampermonkey/src/web-k/version.js
-	var WEB_K_VERSION = "0.4.0-k6";
+	var WEB_K_VERSION = "0.4.0-k7";
 	//#endregion
 	//#region tampermonkey/src/web-k/features/debug/debug-api.js
 	function describeLastConfirmedTarget() {
