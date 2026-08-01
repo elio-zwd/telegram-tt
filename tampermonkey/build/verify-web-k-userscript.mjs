@@ -1,4 +1,4 @@
-import { readFile, readdir } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,11 +10,12 @@ const TAMPERMONKEY_DIR = resolve(BUILD_DIR, '..');
 const SOURCE_DIR = resolve(TAMPERMONKEY_DIR, 'src/web-k');
 const OUTPUT_FILE_NAME = 'telegram-media-continuity-web-k.user.js';
 const OUTPUT_PATH = resolve(TAMPERMONKEY_DIR, OUTPUT_FILE_NAME);
+const LEGACY_MAIN_PATH = resolve(SOURCE_DIR, 'legacy-main.js');
 const GENERATED_NOTICE = '// 此文件由构建生成，请勿直接手工修改。';
 const REQUIRED_MODULE_PATHS = Object.freeze([
   'version.js',
+  'app.js',
   'entry.js',
-  'legacy-main.js',
   'core/runtime.js',
   'core/lifecycle.js',
   'core/cleanup.js',
@@ -24,6 +25,16 @@ const REQUIRED_MODULE_PATHS = Object.freeze([
   'platform/media-viewer.js',
   'platform/message-list.js',
   'platform/navigation.js',
+  'features/continuous-browsing/viewer-session.js',
+  'features/continuous-browsing/index.js',
+  'features/close-position/target-tracker.js',
+  'features/close-position/message-locator.js',
+  'features/close-position/index.js',
+  'features/control-panel/control-panel.js',
+  'features/control-panel/index.js',
+  'features/debug/debug-api.js',
+  'features/debug/probes.js',
+  'features/debug/index.js',
 ]);
 const CORE_FORBIDDEN_TOKENS = Object.freeze([
   '.media-viewer-',
@@ -32,7 +43,7 @@ const CORE_FORBIDDEN_TOKENS = Object.freeze([
   'album-item',
   'bubbles-scrollable',
 ]);
-const LEGACY_FORBIDDEN_SELECTORS = Object.freeze([
+const FEATURE_FORBIDDEN_SELECTORS = Object.freeze([
   '.media-viewer-whole',
   '.media-viewer-movers',
   '.media-viewer-switcher-left',
@@ -49,6 +60,15 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
 async function readRequiredModules() {
   const entries = await Promise.all(REQUIRED_MODULE_PATHS.map(async (modulePath) => {
     const content = await readFile(resolve(SOURCE_DIR, modulePath), 'utf8');
@@ -59,15 +79,16 @@ async function readRequiredModules() {
 
 function verifyModuleBoundaries(modules) {
   for (const [modulePath, content] of modules) {
-    if (!modulePath.startsWith('core/')) continue;
-    for (const token of CORE_FORBIDDEN_TOKENS) {
-      assertCondition(!content.includes(token), `核心模块包含 Telegram DOM 标记：${modulePath} -> ${token}`);
+    if (modulePath.startsWith('core/')) {
+      for (const token of CORE_FORBIDDEN_TOKENS) {
+        assertCondition(!content.includes(token), `核心模块包含 Telegram DOM 标记：${modulePath} -> ${token}`);
+      }
     }
-  }
-
-  const legacyMain = modules.get('legacy-main.js');
-  for (const selector of LEGACY_FORBIDDEN_SELECTORS) {
-    assertCondition(!legacyMain.includes(selector), `legacy-main.js 仍直接查询平台选择器：${selector}`);
+    if (modulePath.startsWith('features/')) {
+      for (const selector of FEATURE_FORBIDDEN_SELECTORS) {
+        assertCondition(!content.includes(selector), `功能模块仍直接包含 Telegram 平台选择器：${modulePath} -> ${selector}`);
+      }
+    }
   }
 
   const settings = modules.get('core/settings.js');
@@ -84,14 +105,59 @@ function verifyModuleBoundaries(modules) {
   const messageList = modules.get('platform/message-list.js');
   assertCondition(messageList.includes("'.scrollable.scrollable-y.bubbles-scrollable'"), '聊天滚动容器选择器未集中到消息列表平台层');
   assertCondition(messageList.includes("'[data-mid][data-peer-id]'"), '消息身份选择器未集中到消息列表平台层');
+
+  const controlPanel = modules.get('features/control-panel/control-panel.js');
+  assertCondition(!controlPanel.includes('../../platform/'), '控制面板不得依赖 platform 模块');
+  assertCondition(!controlPanel.includes('document.querySelector('), '控制面板不得查询 Telegram 页面 DOM');
+
+  const viewerSession = modules.get('features/continuous-browsing/viewer-session.js');
+  assertCondition(viewerSession.includes("from '../../platform/navigation.js'"), '连续浏览模块必须通过 platform/navigation.js 导航');
+
+  const debugApi = modules.get('features/debug/debug-api.js');
+  const publicApiNames = [
+    'inspect',
+    'inspectMessageMapping',
+    'armCloseFlowProbe',
+    'getCloseFlowProbe',
+    'getLastLocationResult',
+    'cancelCloseFlowProbe',
+    'enableDebug',
+    'testPrevious',
+    'testNext',
+    'rescan',
+    'getSummary',
+  ];
+  for (const apiName of publicApiNames) {
+    assertCondition(new RegExp(`\\b${apiName}\\b`).test(debugApi), `调试 API 缺少公开方法：${apiName}`);
+  }
+  assertCondition(debugApi.includes('version: WEB_K_VERSION'), '调试摘要版本未使用 version.js');
+
+  const app = modules.get('app.js');
+  for (const featurePath of [
+    './features/continuous-browsing/index.js',
+    './features/close-position/index.js',
+    './features/control-panel/index.js',
+    './features/debug/index.js',
+  ]) {
+    assertCondition(app.includes(featurePath), `应用装配层缺少功能模块依赖：${featurePath}`);
+  }
+  assertCondition(app.includes("from './core/lifecycle.js'"), '应用装配层未装配 lifecycle');
+
+  const entry = modules.get('entry.js');
+  assertCondition(entry.includes("from './app.js'"), 'entry.js 未从 app.js 启动');
+  assertCondition(entry.includes('createApp().start();'), 'entry.js 未直接启动 createApp()');
+  assertCondition(!entry.includes('./features/') && !entry.includes('./platform/') && !entry.includes('./core/'), 'entry.js 不得直接装配具体模块');
 }
 
 async function verifyGeneratedOutput() {
-  const [generated, topLevelEntries, modules] = await Promise.all([
+  const [generated, topLevelEntries, modules, hasLegacyMain] = await Promise.all([
     readFile(OUTPUT_PATH, 'utf8'),
     readdir(TAMPERMONKEY_DIR, { withFileTypes: true }),
     readRequiredModules(),
+    pathExists(LEGACY_MAIN_PATH),
   ]);
+
+  assertCondition(!hasLegacyMain, 'legacy-main.js 必须在 M3 删除');
 
   const expectedMetadata = createWebKUserscriptMetadata();
   const metadataEndIndex = generated.indexOf('// ==/UserScript==');
@@ -147,6 +213,7 @@ async function verifyGeneratedOutput() {
     `version=${WEB_K_VERSION}`,
     `match=${WEB_K_MATCH}`,
     `modules=${modules.size}`,
+    'legacy=removed',
     `output=${OUTPUT_FILE_NAME}`,
   ].join('\n'));
 }

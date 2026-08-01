@@ -1,5 +1,12 @@
 # Telegram Web K 插件优先迁移矩阵
 
+## 0. PR-M3 当前状态（2026-08-01）
+
+- PR-M1 / PR #9 已合并；
+- PR-M2 / PR #11 已合并，稳定基线为 `13223980777d276bb698a71166edf45710475c6c`；
+- PR-M3 / Draft PR #12 已完成代码迁移、应用装配、legacy 删除和构建产物回填；
+- 真实 Telegram Web K 浏览器回归尚未完成，因此 M3 不标记为产品验收完成，也不启动新的产品功能 PR。
+
 ## 1. 路线结论
 
 后续 Tampermonkey 插件只面向：
@@ -12,15 +19,15 @@ Telegram Web K：https://web.telegram.org/k/*
 
 ```text
 M1 构建基座（已完成并合并）
-→ M2 共享核心与 Web K 平台层（下一实施目标）
-→ M3 独立功能模块（等待 M2 合并）
+→ M2 共享核心与 Web K 平台层（已完成并合并）
+→ M3 独立功能模块（Draft PR #12，等待真实浏览器验收）
 → P1 浏览体验
 → P2 状态与频道
 → P3 保存与下载
 → P4 高级实验
 ```
 
-模块化 M1、M2、M3 必须串行完成；M3 完成前不启动新的产品功能代码。
+模块化 M1、M2、M3 串行实施；M3 已完成代码和构建侧工作，但真实浏览器验收完成前不启动新的产品功能代码。
 
 仓库中曾存在 Web A userscript：
 
@@ -41,11 +48,11 @@ tampermonkey/telegram-media-continuity.user.js
 | PR #6 Web K 连续浏览兼容 | 已合并并完成真实浏览器验收 |
 | PR #7 Web K 关闭后定位 | 已合并；关闭定位、相册消息级定位标记为已完成 |
 | 稳定 Web K 版本 | `0.4.0-k5` |
-| 最新稳定基线 | `codex/tampermonkey-media-continuity@0d083a6ba31052da139e3a77330c70ab22e6efba` |
+| 最新稳定基线 | `codex/tampermonkey-media-continuity@13223980777d276bb698a71166edf45710475c6c` |
 | 规划 PR #8 | 已完成并合并；Merge Commit `88b359a9171faee33676301ae3fd01e0b367035f` |
 | PR-M1 / PR #9 | 已完成并合并；Merge Commit `0d083a6ba31052da139e3a77330c70ab22e6efba` |
-| PR-M2 / PR #11 | 下一实施目标；分支 `refactor/tampermonkey-web-k-core-platform`，尚未合并 |
-| PR-M3 | 等待 M2 合并后开始 |
+| PR-M2 / PR #11 | 已完成并合并；Merge Commit `13223980777d276bb698a71166edf45710475c6c` |
+| PR-M3 / Draft PR #12 | 代码、构建和静态检查已完成；真实浏览器验收待完成 |
 | 当前活动平台 | Web K |
 | Web A | 历史只读，不再开发 |
 
@@ -71,12 +78,12 @@ tampermonkey/telegram-media-continuity.user.js
 | F01 | 多文件源码到单文件 userscript 构建基座 | 当前新增需求：模块化规划 | 已完成 | 稳定 `0.4.0-k5` | 低；不改选择器 | 低 | 打包器可能改变执行语义 | 已完成 / M1 | `refactor/tampermonkey-web-k-build-foundation` / PR #9 | 已完成并合并 |
 | F02 | 版本和 metadata 单一来源 | 当前新增需求：模块化规划 | 已完成 | F01 | 无 | 低 | metadata 必须位于首部 | 已完成 / M1 | 同 F01 | 已完成并合并 |
 | F03 | 生成文件一致性和静态门禁 | 当前新增需求：模块化规划 | 已完成 | F01、F02 | 无 | 低 | 禁止 chunk、动态 import、sourcemap | 已完成 / M1 | 同 F01 | 已完成并合并 |
-| F04 | 共享核心：runtime、lifecycle、settings、cleanup、logger | 当前新增需求：模块化规划 | 完全可实现 | M1 已合并 | 中；抽取时序敏感 | 低；设置需最小化 | 无特殊限制 | P0 / M2 | `refactor/tampermonkey-web-k-core-platform` / PR #11 | 否；当前实施目标 |
-| F05 | Web K 平台适配层：DOM、查看器、消息列表、导航 | 当前新增需求：模块化规划 | 完全可实现 | M1 已合并 | 高；选择器和虚拟列表集中 | 低 | 仅能使用公开 DOM | P0 / M2 | 同 F04 | 与 F04 同 PR；不得和 M3 并行 |
-| F06 | 连续浏览模块 | 当前新增需求：模块化规划 | 完全可实现 | M2 已合并 | 高；媒体切换与清理时序 | 低 | 自动播放受浏览器策略限制 | P0 / M3 | `refactor/tampermonkey-web-k-feature-modules` | 否；等待 M2 |
-| F07 | 关闭定位模块 | 当前新增需求：模块化规划 | 完全可实现 | M2 已合并 | 很高；消息身份和虚拟列表 | 低；仅会话目标 | 无界历史加载不可用 | P0 / M3 | 同 F06 | 与 F06 同 PR |
-| F08 | 控制面板模块 | 当前新增需求：模块化规划 | 完全可实现 | M2 已合并 | 低；Shadow DOM 隔离 | 低 | 不得遮挡 Telegram 控件 | P0 / M3 | 同 F06 | 与 F06 同 PR |
-| F09 | 调试模块 | 当前新增需求：模块化规划 | 完全可实现 | M2 已合并 | 中；探测不可升级为猜测行为 | 中；日志必须脱敏 | 无 | P0 / M3 | 同 F06 | 与 F06 同 PR |
+| F04 | 共享核心：runtime、lifecycle、settings、cleanup、logger | 当前新增需求：模块化规划 | 已完成 | M1 已合并 | 中；抽取时序敏感 | 低；设置需最小化 | 无特殊限制 | 已完成 / M2 | `refactor/tampermonkey-web-k-core-platform` / PR #11 | 已完成并合并 |
+| F05 | Web K 平台适配层：DOM、查看器、消息列表、导航 | 当前新增需求：模块化规划 | 已完成 | M1 已合并 | 高；选择器和虚拟列表集中 | 低 | 仅能使用公开 DOM | 已完成 / M2 | 同 F04 | 已完成并合并 |
+| F06 | 连续浏览模块 | 当前新增需求：模块化规划 | 代码与构建已完成 | M2 已合并 | 高；媒体切换与清理时序 | 低 | 自动播放受浏览器策略限制 | P0 / M3 | `refactor/tampermonkey-web-k-feature-modules` / Draft PR #12 | 与 M3 同 PR；浏览器验收待完成 |
+| F07 | 关闭定位模块 | 当前新增需求：模块化规划 | 代码与构建已完成 | M2 已合并 | 很高；消息身份和虚拟列表 | 低；仅会话目标 | 无界历史加载不可用 | P0 / M3 | 同 F06 | 与 M3 同 PR；浏览器验收待完成 |
+| F08 | 控制面板模块 | 当前新增需求：模块化规划 | 代码与构建已完成 | M2 已合并 | 低；Shadow DOM 隔离 | 低 | 不得遮挡 Telegram 控件 | P0 / M3 | 同 F06 | 与 M3 同 PR；浏览器验收待完成 |
+| F09 | 调试模块 | 当前新增需求：模块化规划 | 代码与构建已完成 | M2 已合并 | 中；探测不可升级为猜测行为 | 中；日志必须脱敏 | 无 | P0 / M3 | 同 F06 | 与 M3 同 PR；浏览器验收待完成 |
 
 P0 的完成标准是保持 PR #7 已验收行为等价，而不是增加产品能力。
 

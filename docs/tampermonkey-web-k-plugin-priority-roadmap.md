@@ -1,5 +1,12 @@
 # Telegram Web K 插件优先迁移路线摘要
 
+## 0. PR-M3 当前状态（2026-08-01）
+
+- M1 / PR #9 与 M2 / PR #11 已合并；
+- M3 / Draft PR #12 已完成四类 feature 抽取、`app.js` 装配、`legacy-main.js` 删除和生成 userscript 回填；
+- 当前只等待最新 Head 的 Linux / Windows CI 与真实 Telegram Web K 浏览器回归；
+- 浏览器验收前保持 Draft，P1 不开始编码。
+
 ## 1. 结论
 
 后续 Tampermonkey 插件只开发 Telegram Web K：
@@ -14,8 +21,8 @@ Web A 仅保留历史脚本，不新增功能、不建立适配器、不参与�
 
 ```text
 M1 构建基座（已完成并合并）
-→ M2 共享核心与 Web K 平台层（下一实施目标）
-→ M3 连续浏览、关闭定位、控制面板、调试模块（等待 M2 合并）
+→ M2 共享核心与 Web K 平台层（已完成并合并）
+→ M3 连续浏览、关闭定位、控制面板、调试模块（Draft PR #12，等待真实浏览器验收）
 → P1 浏览体验
 → P2 状态与频道
 → P3 保存与下载
@@ -31,11 +38,11 @@ P0 模块化完成前，不启动新的产品功能代码。
 | PR #6 Web K 连续浏览兼容 | 已合并并完成真实浏览器验收 |
 | PR #7 Web K 关闭定位 | 已合并；关闭定位和相册消息级定位已完成 |
 | 稳定版本 | `0.4.0-k5` |
-| 最新稳定基线 | `codex/tampermonkey-media-continuity@0d083a6ba31052da139e3a77330c70ab22e6efba` |
+| 最新稳定基线 | `codex/tampermonkey-media-continuity@13223980777d276bb698a71166edf45710475c6c` |
 | 规划 PR #8 | 已完成并合并；Merge Commit `88b359a9171faee33676301ae3fd01e0b367035f` |
 | PR-M1 / PR #9 | 已完成并合并；Merge Commit `0d083a6ba31052da139e3a77330c70ab22e6efba` |
-| PR-M2 / PR #11 | 下一实施目标；分支 `refactor/tampermonkey-web-k-core-platform`，尚未合并 |
-| PR-M3 | 等待 M2 合并后开始 |
+| PR-M2 / PR #11 | 已完成并合并；Merge Commit `13223980777d276bb698a71166edf45710475c6c` |
+| PR-M3 / Draft PR #12 | 代码、构建和静态检查已完成；真实浏览器验收待完成 |
 | 当前路线 | Web K 唯一执行路线 |
 | Web A | 历史只读，不开发 |
 
@@ -68,8 +75,8 @@ P0 模块化完成前，不启动新的产品功能代码。
 | 阶段 | 任务 | 状态 | 分支 / PR | 串行依赖 |
 | --- | --- | --- | --- | --- |
 | M1 | 构建基座、版本和 metadata 单一来源、生成文件检查 | 已完成并合并 | `refactor/tampermonkey-web-k-build-foundation` / PR #9 | PR #8 已合并；Merge Commit `0d083a6ba31052da139e3a77330c70ab22e6efba` |
-| M2 | runtime、lifecycle、settings、logger、DOM、查看器、消息列表、导航 | 下一实施目标；PR #11 尚未合并 | `refactor/tampermonkey-web-k-core-platform` / PR #11 | M1 已合并 |
-| M3 | 连续浏览、关闭定位、控制面板、调试模块；删除 legacy | 等待 M2 合并 | `refactor/tampermonkey-web-k-feature-modules` | 等 M2 合并 |
+| M2 | runtime、lifecycle、settings、logger、DOM、查看器、消息列表、导航 | 已完成并合并 | `refactor/tampermonkey-web-k-core-platform` / PR #11 | M1 已合并 |
+| M3 | 连续浏览、关闭定位、控制面板、调试模块；删除 legacy | Draft PR #12：代码与构建已完成，浏览器验收待完成 | `refactor/tampermonkey-web-k-feature-modules` / PR #12 | M2 已合并 |
 
 P0 必须包含：
 
