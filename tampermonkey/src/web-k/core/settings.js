@@ -50,16 +50,24 @@ export function loadSettings() {
 }
 
 export function saveSettings(settings) {
+  const validatedSettings = validateSettings(settings);
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    const nextState = isPlainObject(parsed) ? parsed : {};
-    nextState.settings = validateSettings(settings);
+    let nextState = {};
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (isPlainObject(parsed)) nextState = parsed;
+      } catch (error) {
+        debugLog('修复损坏的本地设置', error);
+      }
+    }
+    nextState.settings = validatedSettings;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
     return nextState.settings;
   } catch (error) {
     debugLog('写入本地设置失败', error);
-    return validateSettings(settings);
+    return validatedSettings;
   }
 }
 
