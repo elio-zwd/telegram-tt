@@ -232,7 +232,7 @@ tampermonkey/telegram-media-continuity-web-k.user.js
 https://web.telegram.org/k/*
 ```
 
-当前版本：`0.4.0-k7`。
+当前版本：`0.4.0-k8`。
 
 ## 开发真源
 
@@ -242,12 +242,12 @@ https://web.telegram.org/k/*
 tampermonkey/src/web-k/
 ```
 
-PR-M3 后的模块结构：
+当前模块结构：
 
 ```text
 core/       运行时、生命周期、清理、设置、日志
 platform/   Web K DOM、媒体查看器、消息列表、官方导航
-features/   连续浏览、关闭定位、控制面板、调试
+features/   连续浏览、关闭定位、控制面板、调试、快捷键
 app.js      显式装配 core、platform 与 features
 entry.js    仅创建并启动应用
 version.js  版本单一来源
@@ -263,8 +263,15 @@ version.js  版本单一来源
 - 自动连续浏览可选择“图片和视频”“仅图片”或“仅视频”；
 - 媒体筛选只作用于自动推进，TT、Telegram 官方控件和方向键不受限制；
 - 自动模式遇到不匹配媒体时沿当前方向有界跳过，最多 50 项、总计最多 15 秒；
-- 筛选序列在设置变化、手动导航、暂停和会话销毁时立即取消，旧 timer 不会串入新序列；
+- 筛选序列在设置变化、手动导航、暂停、关闭连续浏览和会话销毁时立即取消，旧 timer 不会串入新序列；
 - 无法可靠判断媒体类型时暂停，不根据 URL、文件名、私有模块或 IndexedDB 猜测；
+- `Space` 暂停或继续当前连续浏览会话；
+- `A` 开启或关闭连续浏览；
+- 快捷键只调用现有 ViewerSession 公共方法，不复制计时器、筛选、导航、设置或关闭定位状态；
+- 输入框、文本域、下拉框、可编辑区域、语义文本框、输入法组合、长按和修饰键期间不触发快捷键；
+- `contenteditable="false"` 不会被误判为编辑区域；
+- ArrowLeft、ArrowRight 和 Esc 继续保持 Telegram 原行为；
+- 不提供 `D`、自动保存、自动下载或批量保存；
 - 方向设置只影响自动切换，TT、Telegram 官方控件和方向键继续保持原物理方向；
 - 切换方向或筛选后当前图片从完整停留时间重新倒计时，不立即导航，也不改变连续浏览状态；
 - 正向到末尾、反向到开头时安全停止，不循环、不自动加载更多历史；
@@ -274,6 +281,32 @@ version.js  版本单一来源
 - 相册媒体定位整条来源消息；
 - Shadow DOM 控制条；
 - 脱敏调试和关闭流程探测。
+
+## 键盘快捷键
+
+```text
+Space  暂停／继续连续浏览
+A      开启／关闭连续浏览
+```
+
+触发保护：
+
+- `input`、`textarea`、`select` 不触发；
+- `[contenteditable]` 不触发，但 `contenteditable="false"` 除外；
+- `[role="textbox"]` 不触发；
+- 输入法组合、长按 repeat、Ctrl、Alt、Meta 不触发；
+- 事件已被其他逻辑处理、查看器不可见或会话已销毁时不触发；
+- 只有真正命中 Space 或 A 后才阻止默认行为和传播。
+
+Telegram 原快捷键不变：
+
+```text
+ArrowLeft   上一项
+ArrowRight  下一项
+Esc         关闭媒体查看器
+```
+
+快捷键与正向、反向以及“图片和视频”“仅图片”“仅视频”组合使用。筛选跳过中按 Space 或 A 会通过 ViewerSession 的现有接管逻辑取消旧筛选序列；恢复或重新开启时从当前实际显示媒体重新开始，不恢复旧 timer 或旧序列。
 
 ## 控制条
 
@@ -301,7 +334,7 @@ Web K 设置包含：
 - 自动媒体筛选 `all`、`images` 或 `videos`；
 - 控制条折叠状态。
 
-旧数据缺少筛选字段、筛选值非法、JSON 损坏或 `localStorage` 不可用时，媒体筛选安全回退为 `all`。旧数据的方向兼容规则保持不变，不创建第二个 storage key。
+快捷键不新增 storage 字段。旧数据缺少筛选字段、筛选值非法、JSON 损坏或 `localStorage` 不可用时，媒体筛选安全回退为 `all`。旧数据的方向兼容规则保持不变，不创建第二个 storage key。
 
 ## 构建
 
@@ -325,11 +358,14 @@ node --check tampermonkey/telegram-media-continuity-web-k.user.js
 - `browseDirection` 默认值为 `forward`；
 - `mediaFilter` 默认值为 `all`；
 - 媒体筛选具备最大跳过次数、总超时和序列隔离；
+- `features/shortcuts/**` 存在并由 `app.js` 显式装配；
+- 快捷键包含输入、组合输入、修饰键、重复键、可见性和生命周期保护；
+- 快捷键只处理 Space 和 A，不处理方向键、Esc 或 D；
 - `legacy-main.js` 不存在；
-- 四类 feature 模块存在；
+- 五类 feature 模块存在；
 - 生成文件与重新构建结果一致。
 
-## 调试 API
+## 调试 API 与隐私
 
 控制台公开接口保持：
 
@@ -347,14 +383,15 @@ window.TelegramMediaContinuity.rescan
 window.TelegramMediaContinuity.getSummary
 ```
 
-`getSummary().settings` 会自然包含当前 `browseDirection` 和 `mediaFilter`。调试输出不得包含聊天正文、频道名称、用户名、原始 href 或完整媒体 URL。
+`getSummary().settings` 会自然包含当前 `browseDirection` 和 `mediaFilter`。快捷键不新增调试数据，不输出聊天正文、频道名称、用户名、原始 href 或完整媒体 URL，也不读取 Telegram 私有模块或 IndexedDB。
 
 ## 验收边界
 
-构建和 CI 只能证明源码、产物和静态门禁成立，不能替代真实 Telegram Web K 浏览器验收。媒体筛选的正反向、相册、关闭定位、快速改筛选和窄窗口等场景完成真实页面回归前，功能 PR 保持 Draft。
+构建和 CI 只能证明源码、产物和静态门禁成立，不能替代真实 Telegram Web K 浏览器验收。快捷键与媒体筛选组合、输入保护、快速关闭重开、listener 清理、关闭定位和相册等场景完成真实页面回归前，功能 PR 保持 Draft。
 
 详细设计、兼容规则和验收重点见：
 
 ```text
 docs/tampermonkey-web-k-media-filter.md
+docs/tampermonkey-web-k-shortcuts.md
 ```
