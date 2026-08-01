@@ -1,8 +1,13 @@
-import { BROWSE_DIRECTIONS, DURATIONS } from '../../core/settings.js';
+import { BROWSE_DIRECTIONS, DURATIONS, MEDIA_FILTERS } from '../../core/settings.js';
 
 const BROWSE_DIRECTION_LABELS = Object.freeze({
   forward: '正向',
   backward: '反向',
+});
+const MEDIA_FILTER_LABELS = Object.freeze({
+  all: '图片和视频',
+  images: '仅图片',
+  videos: '仅视频',
 });
 
 export class ControlPanel {
@@ -13,6 +18,7 @@ export class ControlPanel {
     onNavigate,
     onSetPhotoDuration,
     onSetBrowseDirection,
+    onSetMediaFilter,
     onSetPanelCollapsed,
   }) {
     this.host = document.createElement('div');
@@ -85,12 +91,33 @@ export class ControlPanel {
           select { padding: 0 6px; }
           .status { min-width: 72px; max-width: 120px; }
         }
+        @media (max-width: 480px) {
+          .panel {
+            max-width: calc(100vw - 12px);
+            gap: 4px;
+            padding: 5px;
+          }
+          button, select {
+            min-height: 30px;
+            font-size: 12px;
+          }
+          .status {
+            order: 2;
+            flex: 1 0 100%;
+            min-width: 0;
+            max-width: calc(100vw - 32px);
+            text-align: center;
+          }
+        }
       </style>
       <div class="panel" role="toolbar" aria-label="Telegram Web K 连续媒体浏览">
         <button id="toggle" class="primary" type="button">连续浏览</button>
         <button id="pause" type="button">暂停</button>
         <button id="previous" type="button" aria-label="上一项">←</button>
         <button id="next" type="button" aria-label="下一项">→</button>
+        <select id="filter" aria-label="自动浏览媒体类型">
+          ${MEDIA_FILTERS.map((value) => `<option value="${value}">${MEDIA_FILTER_LABELS[value]}</option>`).join('')}
+        </select>
         <select id="direction" aria-label="自动浏览方向">
           ${BROWSE_DIRECTIONS.map((value) => `<option value="${value}">${BROWSE_DIRECTION_LABELS[value]}</option>`).join('')}
         </select>
@@ -111,6 +138,7 @@ export class ControlPanel {
     this.previous = this.shadow.querySelector('#previous');
     this.next = this.shadow.querySelector('#next');
     this.status = this.shadow.querySelector('#status');
+    this.filter = this.shadow.querySelector('#filter');
     this.direction = this.shadow.querySelector('#direction');
     this.duration = this.shadow.querySelector('#duration');
 
@@ -122,6 +150,7 @@ export class ControlPanel {
     this.pause.addEventListener('click', onTogglePause);
     this.previous.addEventListener('click', () => onNavigate(-1, false));
     this.next.addEventListener('click', () => onNavigate(1, false));
+    this.filter.addEventListener('change', () => onSetMediaFilter(this.filter.value));
     this.direction.addEventListener('change', () => onSetBrowseDirection(this.direction.value));
     this.duration.addEventListener('change', () => onSetPhotoDuration(Number(this.duration.value)));
     this.shadow.querySelector('#collapse').addEventListener('click', () => onSetPanelCollapsed(true));
@@ -135,6 +164,7 @@ export class ControlPanel {
     this.pause.disabled = !state.active;
     this.previous.disabled = !state.canPrevious;
     this.next.disabled = !state.canNext;
+    this.filter.value = state.mediaFilter;
     this.direction.value = state.browseDirection;
     this.duration.value = String(state.photoDurationMs);
     this.panel.hidden = state.collapsed;

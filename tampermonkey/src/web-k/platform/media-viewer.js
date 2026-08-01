@@ -45,6 +45,12 @@ export function findActiveMedia(viewer) {
   return best;
 }
 
+export function getMediaType(media) {
+  if (media instanceof HTMLImageElement) return 'images';
+  if (media instanceof HTMLVideoElement) return 'videos';
+  return undefined;
+}
+
 function getMediaNodeId(media) {
   if (!mediaNodeIds.has(media)) {
     mediaNodeIds.set(media, nextMediaNodeId);
