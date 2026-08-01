@@ -1,0 +1,96 @@
+name: Assemble Telegram Web K V1 branch
+
+on:
+  push:
+    branches:
+      - feat/tampermonkey-web-k-v1-completion
+    paths:
+      - .github/workflows/tampermonkey-web-k-v1-branch-build.yml
+
+permissions:
+  contents: write
+
+jobs:
+  assemble-build-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出功能分支
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.1
+          cache: npm
+
+      - name: 装配源码和文档
+        shell: bash
+        run: |
+          set -euo pipefail
+          decode() {
+            local input="$1"
+            local output="$2"
+            mkdir -p "$(dirname "$output")"
+            base64 --decode "$input" | gzip -d > "$output"
+          }
+          decode .build-input/viewer-session.js.gz.b64 tampermonkey/src/web-k/features/continuous-browsing/viewer-session.js
+          decode .build-input/control-panel.js.gz.b64 tampermonkey/src/web-k/features/control-panel/control-panel.js
+          decode .build-input/verify-web-k-userscript.mjs.gz.b64 tampermonkey/build/verify-web-k-userscript.mjs
+          decode .build-input/README.md.gz.b64 tampermonkey/README.md
+          decode .build-input/tampermonkey-web-k-v1-completion.md.gz.b64 docs/tampermonkey-web-k-v1-completion.md
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 检查源码语法
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check tampermonkey/src/web-k/core/settings.js
+          node --check tampermonkey/src/web-k/platform/media-viewer.js
+          node --check tampermonkey/src/web-k/features/continuous-browsing/viewer-session.js
+          node --check tampermonkey/src/web-k/features/control-panel/control-panel.js
+          node --check tampermonkey/build/verify-web-k-userscript.mjs
+
+      - name: 连续构建两次并比较输出
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build:tampermonkey:web-k
+          first_sha="$(sha256sum tampermonkey/telegram-media-continuity-web-k.user.js | awk '{print $1}')"
+          npm run build:tampermonkey:web-k
+          second_sha="$(sha256sum tampermonkey/telegram-media-continuity-web-k.user.js | awk '{print $1}')"
+          test "$first_sha" = "$second_sha"
+          printf '%s\n' "$second_sha" > /tmp/userscript.sha256
+          echo "userscript_sha256=$second_sha"
+
+      - name: 执行 Web K 静态门禁
+        run: npm run check:tampermonkey:web-k
+
+      - name: 检查生成 userscript 语法
+        run: node --check tampermonkey/telegram-media-continuity-web-k.user.js
+
+      - name: 提交干净的综合实现
+        shell: bash
+        run: |
+          set -euo pipefail
+          userscript_sha="$(cat /tmp/userscript.sha256)"
+          rm -rf .build-input
+          rm -f .github/workflows/tampermonkey-web-k-v1-branch-build.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git status --short
+          git commit -m 'feat: 完成 Telegram Web K V1 浏览体验' -m "userscript-sha256: ${userscript_sha}"
+          git push
+          {
+            echo '## Telegram Web K V1 分支预构建'
+            echo
+            echo "- userscript SHA-256: \`${userscript_sha}\`"
+            echo '- 临时输入与临时工作流：已从最终 Commit 删除'
+          } >> "$GITHUB_STEP_SUMMARY"
