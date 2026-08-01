@@ -966,7 +966,6 @@
 		PAUSE_REASONS.FAILURE,
 		PAUSE_REASONS.NODE_INVALID,
 		PAUSE_REASONS.MEDIA_CONFLICT,
-		PAUSE_REASONS.FILTER,
 		PAUSE_REASONS.HOVER
 	]);
 	var PAUSE_STATUS = Object.freeze({
@@ -1031,6 +1030,7 @@
 			this.filterSequence = void 0;
 			this.bufferingTimer = 0;
 			this.isBufferingSlow = false;
+			this.bufferingRecovered = false;
 			this.onlineRecoveryPending = navigator.onLine === false;
 			this.blockCurrentTargetConfirmation = false;
 			this.targetTracker = new MediaTargetTracker({ getCurrentFingerprint: () => this.currentFingerprint });
@@ -1119,7 +1119,7 @@
 			const availability = navigationAvailability(this.viewer);
 			return {
 				active: this.active,
-				paused: MANUAL_PAUSE_REASONS.some((reason) => this.hasPauseReason(reason)),
+				paused: this.hasManualPause(),
 				suspended: this.hasAutomationPause(),
 				collapsed: this.settings.panelCollapsed,
 				photoDurationMs: this.settings.photoDurationMs,
@@ -1141,6 +1141,9 @@
 		hasAutomationPause() {
 			return this.pauseReasons.size > 0;
 		}
+		hasManualPause() {
+			return MANUAL_PAUSE_REASONS.some((reason) => this.hasPauseReason(reason)) || this.isBufferingSlow && this.hasPauseReason(PAUSE_REASONS.BUFFERING);
+		}
 		getPauseStatus() {
 			if (this.isBufferingSlow && this.hasPauseReason(PAUSE_REASONS.BUFFERING)) return "媒体加载较慢，连续浏览已暂停";
 			const reason = PAUSE_STATUS_PRIORITY.find((candidate) => this.hasPauseReason(candidate));
@@ -1161,6 +1164,7 @@
 		clearMediaPauseReasons() {
 			for (const reason of MEDIA_SCOPED_PAUSE_REASONS) this.pauseReasons.delete(reason);
 			this.isBufferingSlow = false;
+			this.bufferingRecovered = false;
 			this.bufferingTimer = clearTimeoutId(this.bufferingTimer);
 		}
 		resumeCurrentMedia() {
@@ -1334,8 +1338,8 @@
 				const handleVideoReady = (eventType) => {
 					if (!this.isCurrentMedia(media, mediaSequenceId)) return;
 					this.bufferingTimer = clearTimeoutId(this.bufferingTimer);
-					this.isBufferingSlow = false;
-					this.pauseReasons.delete(PAUSE_REASONS.BUFFERING);
+					this.bufferingRecovered = true;
+					if (!this.isBufferingSlow) this.pauseReasons.delete(PAUSE_REASONS.BUFFERING);
 					if (eventType === "playing") {
 						this.currentVideoHasPlayed = true;
 						this.pauseReasons.delete(PAUSE_REASONS.USER_ACTION_REQUIRED);
@@ -1380,6 +1384,7 @@
 			if (!this.isCurrentMedia(media, mediaSequenceId)) return;
 			if (this.hasPauseReason(PAUSE_REASONS.BUFFERING)) return;
 			this.isBufferingSlow = false;
+			this.bufferingRecovered = false;
 			this.addPauseReason(PAUSE_REASONS.BUFFERING);
 			this.bufferingTimer = window.setTimeout(() => {
 				this.bufferingTimer = 0;
@@ -1610,7 +1615,7 @@
 		}
 		togglePause() {
 			if (!this.active) return;
-			if (MANUAL_PAUSE_REASONS.some((reason) => this.hasPauseReason(reason))) {
+			if (this.hasManualPause()) {
 				this.resumeFromManualPause();
 				return;
 			}
@@ -1620,6 +1625,16 @@
 		resumeFromManualPause() {
 			this.pauseReasons.delete(PAUSE_REASONS.USER);
 			if (this.hasPauseReason(PAUSE_REASONS.FILTER)) this.takeOverFilterSequence();
+			if (this.isBufferingSlow && this.hasPauseReason(PAUSE_REASONS.BUFFERING)) {
+				if (!this.bufferingRecovered) {
+					this.panel.render(this.viewState());
+					this.panel.setStatus("当前媒体仍在缓冲，请稍后重试");
+					return;
+				}
+				this.isBufferingSlow = false;
+				this.bufferingRecovered = false;
+				this.pauseReasons.delete(PAUSE_REASONS.BUFFERING);
+			}
 			if (this.hasPauseReason(PAUSE_REASONS.NODE_INVALID)) {
 				const previousMediaSequenceId = this.mediaSequenceId;
 				this.refresh();

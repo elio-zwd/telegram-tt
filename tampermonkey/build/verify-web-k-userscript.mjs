@@ -249,6 +249,8 @@ function verifyViewerSession(viewerSession) {
   ]) assertIncludes(viewerSession, reason, `缺少暂停原因：${reason}`);
   assertIncludes(viewerSession, 'this.pauseReasons = new Set();', '暂停原因必须使用独立集合');
   assertIncludes(viewerSession, 'this.pauseReasons.delete(reason)', '暂停恢复必须只清除对应原因');
+  const mediaScopedPauseReasons = viewerSession.match(/const MEDIA_SCOPED_PAUSE_REASONS = Object\.freeze\(\[([\s\S]*?)\]\);/)?.[1] || '';
+  assertExcludes(mediaScopedPauseReasons, 'PAUSE_REASONS.FILTER', '筛选暂停不得因媒体节点替换自动解除');
 
   assertIncludes(viewerSession, "document.addEventListener('fullscreenchange'", '缺少标准 fullscreenchange');
   assertIncludes(viewerSession, 'document.fullscreenElement', '缺少标准 fullscreenElement 判断');
@@ -265,6 +267,9 @@ function verifyViewerSession(viewerSession) {
   assertIncludes(viewerSession, "add(media, 'waiting'", '缺少 waiting 监听');
   assertIncludes(viewerSession, "add(media, 'stalled'", '缺少 stalled 监听');
   assertIncludes(viewerSession, '媒体加载较慢，连续浏览已暂停', '缺少缓冲慢提示');
+  assertIncludes(viewerSession, 'this.bufferingRecovered = true;', '缓冲恢复必须记录可继续证据');
+  assertIncludes(viewerSession, 'this.isBufferingSlow && this.hasPauseReason(PAUSE_REASONS.BUFFERING)', '慢缓冲必须进入可手动继续的暂停状态');
+  assertIncludes(viewerSession, '当前媒体仍在缓冲，请稍后重试', '慢缓冲未恢复时不得错误继续');
   assertIncludes(viewerSession, "error.name === 'NotAllowedError'", '自动播放限制未区分 NotAllowedError');
   assertIncludes(viewerSession, '点击视频开始播放', '自动播放限制缺少用户操作提示');
   assertIncludes(viewerSession, 'media.error.code', '视频失败必须检查 error.code');
