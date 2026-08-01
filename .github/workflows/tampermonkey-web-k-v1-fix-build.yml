@@ -1,0 +1,86 @@
+name: Verify Telegram Web K V1 state fixes
+
+on:
+  pull_request:
+    branches:
+      - build/tampermonkey-web-k-v1-assembly-base
+    types:
+      - opened
+      - synchronize
+
+permissions:
+  contents: write
+
+jobs:
+  apply-build-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出功能分支
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.1
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 应用精确状态边界修正
+        run: node .build-fix/apply-fix.mjs
+
+      - name: 检查源码语法
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check tampermonkey/src/web-k/features/continuous-browsing/viewer-session.js
+          node --check tampermonkey/build/verify-web-k-userscript.mjs
+
+      - name: 连续构建两次并比较输出
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build:tampermonkey:web-k
+          first_sha="$(sha256sum tampermonkey/telegram-media-continuity-web-k.user.js | awk '{print $1}')"
+          npm run build:tampermonkey:web-k
+          second_sha="$(sha256sum tampermonkey/telegram-media-continuity-web-k.user.js | awk '{print $1}')"
+          test "$first_sha" = "$second_sha"
+          printf '%s\n' "$second_sha" > /tmp/userscript.sha256
+          echo "userscript_sha256=$second_sha"
+
+      - name: 执行 Web K 静态门禁
+        run: npm run check:tampermonkey:web-k
+
+      - name: 检查生成 userscript 与差异
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check tampermonkey/telegram-media-continuity-web-k.user.js
+          git diff --check
+
+      - name: 提交状态边界修正
+        shell: bash
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          userscript_sha="$(cat /tmp/userscript.sha256)"
+          rm -rf .build-fix
+          rm -f .github/workflows/tampermonkey-web-k-v1-fix-build.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git status --short
+          git commit -m 'fix: 修正筛选与缓冲暂停恢复边界' -m "userscript-sha256: ${userscript_sha}"
+          git push origin "HEAD:${HEAD_BRANCH}"
+          {
+            echo '## Telegram Web K V1 状态边界修正'
+            echo
+            echo "- userscript SHA-256: \`${userscript_sha}\`"
+            echo '- 临时补丁输入与工作流：已从最终 Commit 删除'
+          } >> "$GITHUB_STEP_SUMMARY"
