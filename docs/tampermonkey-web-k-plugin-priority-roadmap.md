@@ -13,9 +13,9 @@ Web A 仅保留历史脚本，不新增功能、不建立适配器、不参与�
 唯一执行主线：
 
 ```text
-M1 构建基座
-→ M2 共享核心与 Web K 平台层
-→ M3 连续浏览、关闭定位、控制面板、调试模块
+M1 构建基座（已完成并合并）
+→ M2 共享核心与 Web K 平台层（下一实施目标）
+→ M3 连续浏览、关闭定位、控制面板、调试模块（等待 M2 合并）
 → P1 浏览体验
 → P2 状态与频道
 → P3 保存与下载
@@ -31,8 +31,11 @@ P0 模块化完成前，不启动新的产品功能代码。
 | PR #6 Web K 连续浏览兼容 | 已合并并完成真实浏览器验收 |
 | PR #7 Web K 关闭定位 | 已合并；关闭定位和相册消息级定位已完成 |
 | 稳定版本 | `0.4.0-k5` |
-| 规划 PR #8 | Draft，未合并 |
-| PR-M1 / PR #9 | Draft，正在实施构建基座 |
+| 最新稳定基线 | `codex/tampermonkey-media-continuity@0d083a6ba31052da139e3a77330c70ab22e6efba` |
+| 规划 PR #8 | 已完成并合并；Merge Commit `88b359a9171faee33676301ae3fd01e0b367035f` |
+| PR-M1 / PR #9 | 已完成并合并；Merge Commit `0d083a6ba31052da139e3a77330c70ab22e6efba` |
+| PR-M2 / PR #11 | 下一实施目标；分支 `refactor/tampermonkey-web-k-core-platform`，尚未合并 |
+| PR-M3 | 等待 M2 合并后开始 |
 | 当前路线 | Web K 唯一执行路线 |
 | Web A | 历史只读，不开发 |
 
@@ -64,9 +67,9 @@ P0 模块化完成前，不启动新的产品功能代码。
 
 | 阶段 | 任务 | 状态 | 分支 / PR | 串行依赖 |
 | --- | --- | --- | --- | --- |
-| M1 | 构建基座、版本和 metadata 单一来源、生成文件检查 | 进行中 | `refactor/tampermonkey-web-k-build-foundation` / PR #9 | 依赖 PR #8 规划 |
-| M2 | runtime、lifecycle、settings、logger、DOM、查看器、消息列表、导航 | 未开始 | `refactor/tampermonkey-web-k-core-platform` | 等 M1 合并 |
-| M3 | 连续浏览、关闭定位、控制面板、调试模块；删除 legacy | 未开始 | `refactor/tampermonkey-web-k-feature-modules` | 等 M2 合并 |
+| M1 | 构建基座、版本和 metadata 单一来源、生成文件检查 | 已完成并合并 | `refactor/tampermonkey-web-k-build-foundation` / PR #9 | PR #8 已合并；Merge Commit `0d083a6ba31052da139e3a77330c70ab22e6efba` |
+| M2 | runtime、lifecycle、settings、logger、DOM、查看器、消息列表、导航 | 下一实施目标；PR #11 尚未合并 | `refactor/tampermonkey-web-k-core-platform` / PR #11 | M1 已合并 |
+| M3 | 连续浏览、关闭定位、控制面板、调试模块；删除 legacy | 等待 M2 合并 | `refactor/tampermonkey-web-k-feature-modules` | 等 M2 合并 |
 
 P0 必须包含：
 
@@ -197,17 +200,16 @@ D01 未通过前，不启动自动保存代码。
 
 | 对话 | 任务 | 分支 / PR | 冲突范围 |
 | --- | --- | --- | --- |
-| A | M1 构建基座 | `refactor/tampermonkey-web-k-build-foundation` / PR #9 | 独占源码、构建配置和生成 userscript |
-| B | 迁移矩阵刷新 | `docs/tampermonkey-web-k-migration-matrix-refresh` | 仅两份路线文档 |
-| C | 浏览器回归模板 | 独立文档分支 | 只新增验收文档 |
+| A | M2 共享核心与 Web K 平台层 | `refactor/tampermonkey-web-k-core-platform` / PR #11 | 修改 M2 源码、构建检查、Tampermonkey README 和生成 userscript；不修改本路线两份文档 |
+| B | 迁移矩阵刷新 | `docs/tampermonkey-web-k-migration-matrix-refresh` / PR #10 | 仅两份路线文档 |
+| C | M2 真实浏览器只读回归 | 不创建开发分支 | 只检出和验收 PR #11，不修改文件 |
 
 ### 后续串行
 
 ```text
-PR #8 合并
-→ 校正 stacked PR Base
-→ M1 合并
-→ M2
+PR #8 已合并
+→ M1 / PR #9 已完成、验收并合并
+→ M2 / PR #11（下一实施目标）
 → M2 合并
 → M3
 → M3 合并
