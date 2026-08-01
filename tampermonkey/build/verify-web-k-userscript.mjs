@@ -186,8 +186,15 @@ function verifyModuleBoundaries(modules) {
   }
   assertCondition(keyboardShortcuts.includes("event.code === 'Space'"), '快捷键模块缺少 Space');
   assertCondition(keyboardShortcuts.includes("event.code === 'KeyA'"), '快捷键模块缺少 A');
-  for (const forbiddenKey of ['ArrowLeft', 'ArrowRight', 'Escape', 'KeyD']) {
-    assertCondition(!keyboardShortcuts.includes(forbiddenKey), `快捷键模块不得处理 ${forbiddenKey}`);
+  const forbiddenKeyComparisons = Object.freeze([
+    "event.code === 'ArrowLeft'",
+    "event.code === 'ArrowRight'",
+    "event.code === 'Escape'",
+    "event.key === 'Escape'",
+    "event.code === 'KeyD'",
+  ]);
+  for (const comparison of forbiddenKeyComparisons) {
+    assertCondition(!keyboardShortcuts.includes(comparison), `快捷键模块不得包含按键比较：${comparison}`);
   }
   assertCondition(
     (keyboardShortcuts.match(/event\.preventDefault\(\);/g) || []).length === 1,
