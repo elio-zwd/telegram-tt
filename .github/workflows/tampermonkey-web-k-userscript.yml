@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   verify:
@@ -37,30 +37,6 @@ jobs:
 
       - name: 安装依赖
         run: npm ci
-
-      - name: 应用 P1-04 门禁修正并提交
-        if: github.event_name == 'pull_request'
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_BRANCH: ${{ github.head_ref }}
-        run: |
-          set -euo pipefail
-          if [[ ! -f .github/scripts/fix-p1-04-check.py ]]; then
-            echo "P1-04 修正脚本不存在，跳过"
-            exit 0
-          fi
-
-          python3 .github/scripts/fix-p1-04-check.py
-          npm run build:tampermonkey:web-k
-          git show "${BASE_SHA}:.github/workflows/tampermonkey-web-k-userscript.yml" > .github/workflows/tampermonkey-web-k-userscript.yml
-          rm .github/scripts/fix-p1-04-check.py
-
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add .github/workflows/tampermonkey-web-k-userscript.yml .github/scripts/fix-p1-04-check.py tampermonkey
-          git commit -m "fix: 修正自定义图片时间静态门禁"
-          git push origin "HEAD:${HEAD_BRANCH}"
 
       - name: 连续构建两次并比较输出
         shell: bash

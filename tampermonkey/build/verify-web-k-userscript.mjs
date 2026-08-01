@@ -319,8 +319,10 @@ async function verifyGeneratedOutput() {
   assertCondition(generated.includes('createKeyboardShortcuts'), '生成文件缺少快捷键功能');
   assertCondition(generated.includes('toggle-continuous'), '生成文件缺少连续浏览开关快捷键');
   assertCondition(generated.includes('toggle-pause'), '生成文件缺少暂停快捷键');
-  assertCondition(/PHOTO_DURATION_MIN_MS\s*=\s*1e3\b|PHOTO_DURATION_MIN_MS\s*=\s*1000\b/.test(generated), '生成文件缺少 1 秒自定义下限');
-  assertCondition(/PHOTO_DURATION_MAX_MS\s*=\s*3e5\b|PHOTO_DURATION_MAX_MS\s*=\s*300000\b/.test(generated), '生成文件缺少 300 秒自定义上限');
+  assertCondition(
+    /function isValidPhotoDurationMs\(value\) \{\s*return Number\.isInteger\(value\) && value >= (?:1e3|1000) && value <= (?:3e5|300000) && value % 100 === 0;\s*\}/.test(generated),
+    '生成文件缺少 1～300 秒和一位小数精度校验',
+  );
   assertCondition(generated.includes('custom-duration-input'), '生成文件缺少自定义图片时间输入框');
   assertCondition(generated.includes('自定义图片停留秒数'), '生成文件缺少自定义输入可访问性标识');
   assertCondition(generated.includes('apply-duration'), '生成文件缺少自定义图片时间应用按钮');

@@ -158,7 +158,6 @@ export class ControlPanel {
               id="custom-duration-input"
               type="text"
               inputmode="decimal"
-              maxlength="5"
               autocomplete="off"
               aria-label="自定义图片停留秒数"
             >
