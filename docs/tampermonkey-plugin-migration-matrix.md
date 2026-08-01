@@ -11,9 +11,9 @@ Telegram Web K：https://web.telegram.org/k/*
 唯一执行顺序：
 
 ```text
-M1 构建基座
-→ M2 共享核心与 Web K 平台层
-→ M3 独立功能模块
+M1 构建基座（已完成并合并）
+→ M2 共享核心与 Web K 平台层（下一实施目标）
+→ M3 独立功能模块（等待 M2 合并）
 → P1 浏览体验
 → P2 状态与频道
 → P3 保存与下载
@@ -41,8 +41,11 @@ tampermonkey/telegram-media-continuity.user.js
 | PR #6 Web K 连续浏览兼容 | 已合并并完成真实浏览器验收 |
 | PR #7 Web K 关闭后定位 | 已合并；关闭定位、相册消息级定位标记为已完成 |
 | 稳定 Web K 版本 | `0.4.0-k5` |
-| 规划 PR #8 | Draft，未合并 |
-| PR-M1 / PR #9 | Draft，正在建立构建基座 |
+| 最新稳定基线 | `codex/tampermonkey-media-continuity@0d083a6ba31052da139e3a77330c70ab22e6efba` |
+| 规划 PR #8 | 已完成并合并；Merge Commit `88b359a9171faee33676301ae3fd01e0b367035f` |
+| PR-M1 / PR #9 | 已完成并合并；Merge Commit `0d083a6ba31052da139e3a77330c70ab22e6efba` |
+| PR-M2 / PR #11 | 下一实施目标；分支 `refactor/tampermonkey-web-k-core-platform`，尚未合并 |
+| PR-M3 | 等待 M2 合并后开始 |
 | 当前活动平台 | Web K |
 | Web A | 历史只读，不再开发 |
 
@@ -65,10 +68,10 @@ tampermonkey/telegram-media-continuity.user.js
 
 | 编号 | 任务 | 来源 | Web K 可行性 | 依赖模块 | DOM 风险 | 隐私风险 | 浏览器限制 | 优先级 | 建议分支 | 可并行 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| F01 | 多文件源码到单文件 userscript 构建基座 | 当前新增需求：模块化规划 | 完全可实现 | 稳定 `0.4.0-k5` | 低；不改选择器 | 低 | 打包器可能改变执行语义 | P0 / M1 | `refactor/tampermonkey-web-k-build-foundation` | 否；M1 独占源码和生成文件 |
-| F02 | 版本和 metadata 单一来源 | 当前新增需求：模块化规划 | 完全可实现 | F01 | 无 | 低 | metadata 必须位于首部 | P0 / M1 | 同 F01 | 与 F01 同 PR |
-| F03 | 生成文件一致性和静态门禁 | 当前新增需求：模块化规划 | 完全可实现 | F01、F02 | 无 | 低 | 禁止 chunk、动态 import、sourcemap | P0 / M1 | 同 F01 | 与 F01 同 PR |
-| F04 | 共享核心：runtime、lifecycle、settings、cleanup、logger | 当前新增需求：模块化规划 | 完全可实现 | M1 已合并 | 中；抽取时序敏感 | 低；设置需最小化 | 无特殊限制 | P0 / M2 | `refactor/tampermonkey-web-k-core-platform` | 否；等待 M1 |
+| F01 | 多文件源码到单文件 userscript 构建基座 | 当前新增需求：模块化规划 | 已完成 | 稳定 `0.4.0-k5` | 低；不改选择器 | 低 | 打包器可能改变执行语义 | 已完成 / M1 | `refactor/tampermonkey-web-k-build-foundation` / PR #9 | 已完成并合并 |
+| F02 | 版本和 metadata 单一来源 | 当前新增需求：模块化规划 | 已完成 | F01 | 无 | 低 | metadata 必须位于首部 | 已完成 / M1 | 同 F01 | 已完成并合并 |
+| F03 | 生成文件一致性和静态门禁 | 当前新增需求：模块化规划 | 已完成 | F01、F02 | 无 | 低 | 禁止 chunk、动态 import、sourcemap | 已完成 / M1 | 同 F01 | 已完成并合并 |
+| F04 | 共享核心：runtime、lifecycle、settings、cleanup、logger | 当前新增需求：模块化规划 | 完全可实现 | M1 已合并 | 中；抽取时序敏感 | 低；设置需最小化 | 无特殊限制 | P0 / M2 | `refactor/tampermonkey-web-k-core-platform` / PR #11 | 否；当前实施目标 |
 | F05 | Web K 平台适配层：DOM、查看器、消息列表、导航 | 当前新增需求：模块化规划 | 完全可实现 | M1 已合并 | 高；选择器和虚拟列表集中 | 低 | 仅能使用公开 DOM | P0 / M2 | 同 F04 | 与 F04 同 PR；不得和 M3 并行 |
 | F06 | 连续浏览模块 | 当前新增需求：模块化规划 | 完全可实现 | M2 已合并 | 高；媒体切换与清理时序 | 低 | 自动播放受浏览器策略限制 | P0 / M3 | `refactor/tampermonkey-web-k-feature-modules` | 否；等待 M2 |
 | F07 | 关闭定位模块 | 当前新增需求：模块化规划 | 完全可实现 | M2 已合并 | 很高；消息身份和虚拟列表 | 低；仅会话目标 | 无界历史加载不可用 | P0 / M3 | 同 F06 | 与 F06 同 PR |
@@ -212,16 +215,16 @@ P4 只允许先做小范围实验和风险报告。虚拟列表、高级队列�
 
 | 对话 | 任务 | 分支 / PR | 文件范围 | 并行结论 |
 | --- | --- | --- | --- | --- |
-| A | M1 构建基座 | `refactor/tampermonkey-web-k-build-foundation` / PR #9 | `package.json`、构建配置、模块入口、生成 userscript、Tampermonkey README/AGENTS | 主开发窗口；独占代码和生成文件 |
-| B | 本矩阵和路线摘要刷新 | `docs/tampermonkey-web-k-migration-matrix-refresh` | 仅本文件和 `tampermonkey-web-k-plugin-priority-roadmap.md` | 可与 A 并行；无文件重叠 |
-| C | 浏览器回归模板 | 独立文档分支 | 只新增验收文档 | 可与 A/B 并行，前提是不修改上述两份文档 |
+| A | M2 共享核心与 Web K 平台层 | `refactor/tampermonkey-web-k-core-platform` / PR #11 | `.github/workflows/tampermonkey-web-k-userscript.yml`、`docs/tampermonkey-web-k-core-platform-m2.md`、`tampermonkey/**` 中的构建、源码、README 和生成 userscript | 当前代码主线；不修改本矩阵两份路线文档 |
+| B | 本矩阵和路线摘要刷新 | `docs/tampermonkey-web-k-migration-matrix-refresh` / PR #10 | 仅本文件和 `tampermonkey-web-k-plugin-priority-roadmap.md` | 可与 A 并行；无文件重叠 |
+| C | M2 真实浏览器只读回归 | 不创建开发分支 | 只检出和验收 PR #11，不写文件 | 可与 A/B 并行，结果反馈到 PR #11 |
 
 ### 10.2 必须串行
 
 ```text
-PR #8 合并并校正 stacked Base
-→ M1 / PR #9 完成、验收、合并
-→ M2
+PR #8 已合并
+→ M1 / PR #9 已完成、验收并合并
+→ M2 / PR #11（下一实施目标）
 → M2 合并
 → M3
 → M3 合并
@@ -229,7 +232,7 @@ PR #8 合并并校正 stacked Base
 ```
 
 - M1、M2、M3 不得由不同对话同时从同一 legacy 文件拆分；
-- M2 不得提前基于未合并的 M1 接口开发；
+- M2 必须基于已合并的 M1 接口；
 - M3 不得提前基于未合并的 M2 接口开发；
 - 公共 `core/**` 或 `platform/**` 接口变化必须先建立独立基础 PR。
 
