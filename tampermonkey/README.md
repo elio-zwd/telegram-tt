@@ -232,17 +232,17 @@ tampermonkey/telegram-media-continuity-web-k.user.js
 https://web.telegram.org/k/*
 ```
 
-当前版本：`0.4.0-k9`。
+当前版本：`0.4.0-k10`。
 
 ## 开发真源
 
-生成 userscript 不再作为开发入口。唯一开发真源是：
+唯一开发真源：
 
 ```text
 tampermonkey/src/web-k/
 ```
 
-当前模块结构：
+模块结构：
 
 ```text
 core/       运行时、生命周期、清理、设置、日志
@@ -253,50 +253,117 @@ entry.js    仅创建并启动应用
 version.js  版本单一来源
 ```
 
-`legacy-main.js` 已删除，不得恢复兼容转发壳。
+生成文件 `telegram-media-continuity-web-k.user.js` 只能通过构建产生，不得手工编辑。`legacy-main.js` 已删除，不得恢复。
 
-## 当前能力
+## V1 当前能力
 
-- 图片加载后按设置倒计时切换；
-- 图片时间保留 2、3、5、8、10、15、30 秒预设，并支持 1.0～300.0 秒的一位小数自定义值；
-- 自定义时间保存为整数毫秒，刷新页面和重新打开查看器后继续恢复；
-- 非法、空白、科学计数法、超范围或超过一位小数的输入不会保存，也不会改变当前倒计时；
-- 图片显示中修改时间会从新的完整时长重新计时；暂停或关闭时只保存且不启动计时；视频显示中修改图片时间不影响当前视频；
-- 普通视频结束后自动切换；
-- 自动连续浏览可选择正向（下一项）或反向（上一项）；
-- 自动连续浏览可选择“图片和视频”“仅图片”或“仅视频”；
-- 媒体筛选只作用于自动推进，TT、Telegram 官方控件和方向键不受限制；
-- 自动模式遇到不匹配媒体时沿当前方向有界跳过，最多 50 项、总计最多 15 秒；
-- 筛选序列在设置变化、手动导航、暂停、关闭连续浏览和会话销毁时立即取消，旧 timer 不会串入新序列；
-- 无法可靠判断媒体类型时暂停，不根据 URL、文件名、私有模块或 IndexedDB 猜测；
-- `Space` 暂停或继续当前连续浏览会话；
-- `A` 开启或关闭连续浏览；
-- 快捷键只调用现有 ViewerSession 公共方法，不复制计时器、筛选、导航、设置或关闭定位状态；
-- 输入框、文本域、下拉框、可编辑区域、语义文本框、输入法组合、长按和修饰键期间不触发快捷键；
-- `contenteditable="false"` 不会被误判为编辑区域；
-- ArrowLeft、ArrowRight 和 Esc 继续保持 Telegram 原行为；
-- 不提供 `D`、自动保存、自动下载或批量保存；
-- 方向设置只影响自动切换，TT、Telegram 官方控件和方向键继续保持原物理方向；
-- 切换方向或筛选后当前图片从完整停留时间重新倒计时，不立即导航，也不改变连续浏览状态；
-- 正向到末尾、反向到开头时安全停止，不循环、不自动加载更多历史；
-- 鼠标悬停、页面失焦、缩放和交互期间暂停；
-- 协调 TT 控件、Telegram 官方左右控件和方向键切换；
-- 关闭查看器后定位最后真正成功显示的媒体消息，跳过中的中间项目不会被确认为最终目标；
-- 相册媒体定位整条来源消息；
-- Shadow DOM 控制条；
-- 脱敏调试和关闭流程探测。
+- 图片加载成功后按预设或自定义时间自动切换；
+- 图片时间预设为 2、3、5、8、10、15、30 秒，自定义范围为 `1.0～300.0` 秒；
+- 普通视频只在有效 `ended` 后自动切换；
+- 循环媒体按 `HTMLVideoElement && loop === true` 识别，首次 `playing` 后复用图片时间倒计时；
+- 正向、反向连续浏览；
+- “图片和视频”“仅图片”“仅视频”自动筛选；
+- 筛选最多跳过 50 项、总计最多 15 秒，使用独立 sequence ID；
+- Space 暂停／继续，A 开启／关闭连续浏览；
+- 输入框、文本域、下拉框、可编辑区域和输入法组合期间不触发快捷键；
+- 页面失焦、全屏、标准 PiP、离线、缓冲、缩放、悬停和媒体交互期间暂停自动切换；
+- `waiting`／`stalled` 不直接判定失败，持续约 15 秒后提示加载较慢；
+- 自动播放 `NotAllowedError` 提示点击视频，不自动跳过；
+- 图片明确 `error` 或视频有效 `error.code` 第一次出现时暂停，不自动跳过；
+- 用户仍可使用 Telegram 原生导航、方向键或关闭；
+- 全局保存普通视频静音、音量和倍速；
+- 倍速支持 `0.5x / 1x / 1.25x / 1.5x / 2x`；
+- Telegram 替换普通 video 节点后重新应用播放偏好；
+- 循环媒体不应用普通视频偏好，不会被强制取消静音；
+- 关闭查看器后定位最后真正成功显示的媒体消息；
+- 相册定位整条来源消息；
+- Shadow DOM 控制条、窄窗口换行、收起与展开；
+- 脱敏调试 API 和单文件 Web K userscript 构建。
 
-## 图片停留时间
+## 循环媒体策略
 
-控制条的“图片时间”保留以下预设：
+唯一正式判断条件：
+
+```js
+media instanceof HTMLVideoElement && media.loop === true
+```
+
+循环媒体仍属于视频。“仅图片”会跳过，“仅视频”会保留。循环媒体不等待通常不会出现的 `ended`；第一次进入 `playing` 后使用图片停留时间。节点替换、暂停、缓冲或系统状态变化会作废旧倒计时，恢复后从完整时间重新计时。
+
+不根据 URL、文件名、扩展名、聊天文本、`muted`、`autoplay`、尺寸、时长、Telegram 私有对象、webpack 或 IndexedDB 猜测媒体类型。
+
+## 暂停与恢复
+
+会话独立记录用户、页面、全屏、PiP、离线、缓冲、自动播放限制、失败、节点失效、证据冲突、筛选、悬停、交互和缩放等暂停原因。解除一个原因不会错误解除其他原因。
+
+- 进入全屏或真实标准 PiP 后暂停；退出后重新确认当前节点，不立即导航；
+- 不移除 Telegram 默认的 `disablePictureInPicture`；
+- 离线后暂停，在线后图片等待有效 `load` 或已确认可显示，视频等待 `canplay`／`playing`；
+- `waiting`／`stalled` 只进入可恢复缓冲暂停；
+- `NotAllowedError` 归类为需要用户操作；
+- 确认失败后不自动点击下一项、不循环重试、不污染关闭定位目标；
+- 新媒体节点、有效恢复或用户明确继续后按当前真实状态恢复。
+
+## 图片与循环媒体停留时间
+
+控制条保留以下预设：
 
 ```text
 2、3、5、8、10、15、30 秒
 ```
 
-选择“自定义…”后可输入 `1.0～300.0` 秒，支持整数或一位小数，并可点击“应用”或按 Enter 提交。输入会清理首尾空格，内部统一保存为整数毫秒。整数显示不附带 `.0`。
+选择“自定义…”后可输入 `1.0～300.0` 秒，支持整数或一位小数，并可点击“应用”或按 Enter 提交。空值、科学计数法、超过一位小数、超范围和非数字不会保存，也不会改变上一个有效值。
 
-非法输入不会写入 `tt.mediaContinuity.v1`，不会替换上一个有效值，也不会改变当前倒计时。图片正在显示时，合法修改会取消旧倒计时并从完整新时长开始；暂停、连续浏览关闭、视频播放或媒体筛选跳过中只按对应状态安全保存，不会额外导航或启动第二套 timer。
+图片或循环媒体显示中修改时间，会从完整新时长重新计时；用户暂停、系统暂停或连续浏览关闭时只保存，不解除暂停；普通视频播放不受影响。
+
+## 视频播放偏好
+
+普通视频全局保存：
+
+- 静音状态；
+- 音量 `0～1`；
+- 倍速 `0.5x / 1x / 1.25x / 1.5x / 2x`。
+
+监听标准 `volumechange` 和 `ratechange`，Telegram 原生控件修改也会同步保存。程序应用设置时只在值变化时写入，避免反馈循环。循环媒体不套用普通视频偏好。
+
+## 控制条
+
+- **连续浏览：开／关**；
+- **暂停／继续**；
+- **←／→** Telegram 官方上一项／下一项；
+- **正向／反向**；
+- **图片和视频／仅图片／仅视频**；
+- **图片与循环媒体时间／自定义**；
+- **声音／静音**；
+- **音量滑杆和百分比**；
+- **视频倍速**；
+- **状态与错误提示**；
+- **×／TT** 收起与展开。
+
+所有输入控件具有可访问性标签。控制条使用 Shadow DOM，窄窗口自动换行，不增加自动保存、下载、预加载、历史或频道设置入口。
+
+## 本地设置
+
+唯一 storage key：
+
+```text
+tt.mediaContinuity.v1
+```
+
+Web K 设置字段：
+
+```text
+continuousEnabled
+photoDurationMs
+browseDirection
+mediaFilter
+panelCollapsed
+videoMuted
+videoVolume
+videoPlaybackRate
+```
+
+旧数据缺少新字段时安全回退。非法音量和倍速不会保存为运行值。顶层关闭定位记录等其他数据继续保留，不创建第二个 key。
 
 ## 键盘快捷键
 
@@ -305,52 +372,7 @@ Space  暂停／继续连续浏览
 A      开启／关闭连续浏览
 ```
 
-触发保护：
-
-- `input`、`textarea`、`select` 不触发；
-- `[contenteditable]` 不触发，但 `contenteditable="false"` 除外；
-- `[role="textbox"]` 不触发；
-- 输入法组合、长按 repeat、Ctrl、Alt、Meta 不触发；
-- 事件已被其他逻辑处理、查看器不可见或会话已销毁时不触发；
-- 只有真正命中 Space 或 A 后才阻止默认行为和传播。
-
-Telegram 原快捷键不变：
-
-```text
-ArrowLeft   上一项
-ArrowRight  下一项
-Esc         关闭媒体查看器
-```
-
-快捷键与正向、反向以及“图片和视频”“仅图片”“仅视频”组合使用。筛选跳过中按 Space 或 A 会通过 ViewerSession 的现有接管逻辑取消旧筛选序列；恢复或重新开启时从当前实际显示媒体重新开始，不恢复旧 timer 或旧序列。
-
-## 控制条
-
-- **连续浏览：开／关**：启用或关闭自动推进；
-- **暂停／继续**：临时暂停或恢复当前连续浏览会话；
-- **←／→**：始终触发 Telegram 官方上一项或下一项，不受自动方向和媒体筛选影响；
-- **正向／反向**：设置下一次自动切换方向；
-- **图片和视频／仅图片／仅视频**：设置自动连续浏览的媒体类型；
-- **图片时间**：选择图片停留时间；
-- **×**：折叠为一个 `TT` 小按钮，折叠状态会持久化。
-
-## 本地设置
-
-继续使用：
-
-```text
-tt.mediaContinuity.v1
-```
-
-Web K 设置包含：
-
-- 连续浏览开关；
-- 图片停留时间；
-- 自动浏览方向 `forward` 或 `backward`；
-- 自动媒体筛选 `all`、`images` 或 `videos`；
-- 控制条折叠状态。
-
-快捷键不新增 storage 字段。旧数据缺少筛选字段、筛选值非法、JSON 损坏或 `localStorage` 不可用时，媒体筛选安全回退为 `all`。旧数据的方向兼容规则保持不变，不创建第二个 storage key。
+`input`、`textarea`、`select`、可编辑区域、语义文本框、输入法组合、长按 repeat、Ctrl、Alt、Meta、不可见查看器或已销毁会话不触发。ArrowLeft、ArrowRight 和 Esc 保持 Telegram 原行为，不提供 D 或下载快捷键。
 
 ## 构建
 
@@ -359,31 +381,16 @@ Web K 设置包含：
 ```powershell
 npm ci
 npm run build:tampermonkey:web-k
+npm run build:tampermonkey:web-k
 npm run check:tampermonkey:web-k
 node --check tampermonkey/telegram-media-continuity-web-k.user.js
 ```
 
-构建输出必须保持：
-
-- 单个未压缩 IIFE userscript；
-- 无动态 import、额外 chunk 或 sourcemap；
-- metadata 唯一匹配 Web K；
-- `@grant none`；
-- 版本来自 `version.js`；
-- storage key 继续为 `tt.mediaContinuity.v1`；
-- `browseDirection` 默认值为 `forward`；
-- `mediaFilter` 默认值为 `all`；
-- 媒体筛选具备最大跳过次数、总超时和序列隔离；
-- `features/shortcuts/**` 存在并由 `app.js` 显式装配；
-- 快捷键包含输入、组合输入、修饰键、重复键、可见性和生命周期保护；
-- 快捷键只处理 Space 和 A，不处理方向键、Esc 或 D；
-- `legacy-main.js` 不存在；
-- 五类 feature 模块存在；
-- 生成文件与重新构建结果一致。
+两次生成文件 SHA-256 必须一致。构建保持单个未压缩 IIFE、无动态 import、额外 chunk 或 sourcemap、metadata 只匹配 Web K、`@grant none`、版本来自 `version.js`。
 
 ## 调试 API 与隐私
 
-控制台公开接口保持：
+公开接口保持：
 
 ```text
 window.TelegramMediaContinuity.inspect
@@ -399,15 +406,22 @@ window.TelegramMediaContinuity.rescan
 window.TelegramMediaContinuity.getSummary
 ```
 
-`getSummary().settings` 会自然包含当前 `browseDirection` 和 `mediaFilter`。快捷键不新增调试数据，不输出聊天正文、频道名称、用户名、原始 href 或完整媒体 URL，也不读取 Telegram 私有模块或 IndexedDB。
+不输出聊天正文、频道名称、用户名、原始 href 或完整媒体 URL，不读取 Telegram 私有模块或 IndexedDB。
 
 ## 验收边界
 
-构建和 CI 只能证明源码、产物和静态门禁成立，不能替代真实 Telegram Web K 浏览器验收。快捷键与媒体筛选组合、输入保护、快速关闭重开、listener 清理、关闭定位和相册等场景完成真实页面回归前，功能 PR 保持 Draft。
+构建和 GitHub CI 不能替代真实 Telegram Web K 浏览器验收。循环媒体、全屏、默认 PiP 限制、离线恢复、缓冲、自动播放拒绝、失败暂停、视频偏好、窄窗口、相册、关闭定位和快速关闭重开完成真实页面回归前，综合 PR 保持 Draft。
 
-详细设计、兼容规则和验收重点见：
+详细说明：
 
 ```text
 docs/tampermonkey-web-k-media-filter.md
 docs/tampermonkey-web-k-shortcuts.md
+docs/tampermonkey-web-k-v1-completion.md
 ```
+
+媒体状态与事件依据来自 Draft PR #17 的 `docs/tampermonkey-web-k-media-state-events-research.md`，本综合分支不复制该研究分支文件。
+
+## 回退
+
+在 Tampermonkey 中停用脚本或回退到 `0.4.0-k9`。GitHub 可 revert 综合 PR。新设置字段可被旧版本安全忽略，不需要删除 `tt.mediaContinuity.v1`。
