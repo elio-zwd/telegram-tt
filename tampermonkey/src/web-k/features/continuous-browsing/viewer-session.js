@@ -461,7 +461,9 @@ export class ViewerSession {
     this.currentVideoHasPlayed = media instanceof HTMLVideoElement
       && !media.paused
       && media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
-    this.blockCurrentTargetConfirmation = false;
+    if (!this.hasPauseReason(PAUSE_REASONS.FILTER)) {
+      this.blockCurrentTargetConfirmation = false;
+    }
 
     const add = (target, type, listener, options) => {
       addEventListenerCleanup(this.mediaCleanup, target, type, listener, options);

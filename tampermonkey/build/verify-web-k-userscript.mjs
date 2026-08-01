@@ -251,6 +251,7 @@ function verifyViewerSession(viewerSession) {
   assertIncludes(viewerSession, 'this.pauseReasons.delete(reason)', '暂停恢复必须只清除对应原因');
   const mediaScopedPauseReasons = viewerSession.match(/const MEDIA_SCOPED_PAUSE_REASONS = Object\.freeze\(\[([\s\S]*?)\]\);/)?.[1] || '';
   assertExcludes(mediaScopedPauseReasons, 'PAUSE_REASONS.FILTER', '筛选暂停不得因媒体节点替换自动解除');
+  assertIncludes(viewerSession, 'if (!this.hasPauseReason(PAUSE_REASONS.FILTER))', '筛选暂停期间必须继续屏蔽关闭定位确认');
 
   assertIncludes(viewerSession, "document.addEventListener('fullscreenchange'", '缺少标准 fullscreenchange');
   assertIncludes(viewerSession, 'document.fullscreenElement', '缺少标准 fullscreenElement 判断');
