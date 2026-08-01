@@ -4,11 +4,13 @@ const STORAGE_KEY = 'tt.mediaContinuity.v1';
 
 export const DURATIONS = [2000, 3000, 5000, 8000, 10000, 15000, 30000];
 export const BROWSE_DIRECTIONS = Object.freeze(['forward', 'backward']);
+export const MEDIA_FILTERS = Object.freeze(['all', 'images', 'videos']);
 
 const DEFAULT_SETTINGS = Object.freeze({
   continuousEnabled: false,
   photoDurationMs: 5000,
   browseDirection: 'forward',
+  mediaFilter: 'all',
   panelCollapsed: false,
 });
 
@@ -28,6 +30,9 @@ export function validateSettings(value) {
     browseDirection: BROWSE_DIRECTIONS.includes(source.browseDirection)
       ? source.browseDirection
       : DEFAULT_SETTINGS.browseDirection,
+    mediaFilter: MEDIA_FILTERS.includes(source.mediaFilter)
+      ? source.mediaFilter
+      : DEFAULT_SETTINGS.mediaFilter,
     panelCollapsed: typeof source.panelCollapsed === 'boolean'
       ? source.panelCollapsed
       : DEFAULT_SETTINGS.panelCollapsed,

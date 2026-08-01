@@ -98,10 +98,18 @@ function verifyModuleBoundaries(modules) {
     settings.includes('BROWSE_DIRECTIONS.includes(source.browseDirection)'),
     '设置模块未校验正向和反向浏览方向',
   );
+  assertCondition(settings.includes("mediaFilter: 'all'"), '设置模块缺少默认全部媒体筛选');
+  assertCondition(
+    settings.includes('MEDIA_FILTERS.includes(source.mediaFilter)'),
+    '设置模块未校验媒体类型筛选值',
+  );
 
   const mediaViewer = modules.get('platform/media-viewer.js');
   assertCondition(mediaViewer.includes("document.querySelector('.media-viewer-whole')"), '媒体查看器选择器未集中到平台层');
   assertCondition(mediaViewer.includes("viewer.querySelector('.media-viewer-movers')"), '媒体 root 选择器未集中到平台层');
+  assertCondition(mediaViewer.includes('export function getMediaType(media)'), '媒体平台层缺少公开媒体类型接口');
+  assertCondition(mediaViewer.includes("return 'images';"), '媒体平台层未把 img 归类为图片');
+  assertCondition(mediaViewer.includes("return 'videos';"), '媒体平台层未把 video 归类为视频');
 
   const navigation = modules.get('platform/navigation.js');
   assertCondition(navigation.includes("'.media-viewer-switcher-left'"), '上一项选择器未集中到导航平台层');
@@ -116,6 +124,8 @@ function verifyModuleBoundaries(modules) {
   assertCondition(!controlPanel.includes('document.querySelector('), '控制面板不得查询 Telegram 页面 DOM');
   assertCondition(controlPanel.includes('id="direction"'), '控制面板缺少自动浏览方向选择框');
   assertCondition(controlPanel.includes('onSetBrowseDirection'), '控制面板缺少方向回调');
+  assertCondition(controlPanel.includes('id="filter"'), '控制面板缺少媒体类型筛选框');
+  assertCondition(controlPanel.includes('onSetMediaFilter'), '控制面板缺少媒体筛选回调');
   assertCondition(controlPanel.includes('onNavigate(-1, false)'), '控制面板上一项必须保持 -1');
   assertCondition(controlPanel.includes('onNavigate(1, false)'), '控制面板下一项必须保持 1');
 
@@ -131,17 +141,37 @@ function verifyModuleBoundaries(modules) {
     '图片和视频自动切换未统一使用自动方向',
   );
   assertCondition(
-    viewerSession.includes("if (event.key === 'ArrowRight') this.prepareNavigationTarget(1);"),
+    viewerSession.includes("if (event.key === 'ArrowRight')"),
     'ArrowRight 必须继续保持方向 1',
   );
   assertCondition(
-    viewerSession.includes("else if (event.key === 'ArrowLeft') this.prepareNavigationTarget(-1);"),
+    viewerSession.includes('this.prepareNavigationTarget(1);'),
+    'ArrowRight 必须使用方向 1 准备关闭定位目标',
+  );
+  assertCondition(
+    viewerSession.includes("else if (event.key === 'ArrowLeft')"),
     'ArrowLeft 必须继续保持方向 -1',
+  );
+  assertCondition(
+    viewerSession.includes('this.prepareNavigationTarget(-1);'),
+    'ArrowLeft 必须使用方向 -1 准备关闭定位目标',
   );
   assertCondition(
     viewerSession.includes('this.prepareNavigationTarget(direction);'),
     '导航前必须使用实际方向准备关闭定位目标',
   );
+  assertCondition(
+    viewerSession.includes('const FILTER_SEQUENCE_MAX_SKIPS = 50;'),
+    '媒体筛选缺少明确最大跳过次数',
+  );
+  assertCondition(
+    viewerSession.includes('const FILTER_SEQUENCE_TIMEOUT_MS = 15000;'),
+    '媒体筛选缺少明确总超时',
+  );
+  assertCondition(viewerSession.includes('filterSequenceId'), '媒体筛选缺少序列隔离');
+  assertCondition(viewerSession.includes('blockCurrentTargetConfirmation'), '跳过序列未隔离关闭定位确认');
+  assertCondition(viewerSession.includes('takeOverFilterSequence()'), '手动操作未提供筛选序列接管入口');
+  assertCondition(viewerSession.includes("this.settings.mediaFilter === 'all'"), '全部媒体模式未保持直接自动导航');
 
   const debugApi = modules.get('features/debug/debug-api.js');
   const publicApiNames = [
@@ -218,6 +248,7 @@ async function verifyGeneratedOutput() {
   );
   assertCondition(/version:\s*WEB_K_VERSION\b/.test(generated), '调试 API 未使用运行时版本常量');
   assertCondition(generated.includes('browseDirection'), '生成文件缺少浏览方向设置');
+  assertCondition(generated.includes('mediaFilter'), '生成文件缺少媒体类型筛选设置');
 
   assertCondition(!/\bimport\s*\(/.test(generated), '生成文件禁止运行时动态 import');
   assertCondition(!/^\s*(?:import|export)\s/m.test(generated), '生成文件仍包含 ES Module 语句');
