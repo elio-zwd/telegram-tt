@@ -1,18 +1,17 @@
 name: Assemble Telegram Web K V1 branch
 
 on:
-  push:
+  pull_request:
     branches:
-      - feat/tampermonkey-web-k-v1-completion
-    paths:
-      - .github/workflows/tampermonkey-web-k-v1-branch-build.yml
+      - build/tampermonkey-web-k-v1-assembly-base
+    types:
+      - opened
 
 permissions:
   contents: write
 
 jobs:
   assemble-build-commit:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -20,6 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
 
       - name: 配置 Node.js
         uses: actions/setup-node@v4
@@ -76,6 +76,8 @@ jobs:
 
       - name: 提交干净的综合实现
         shell: bash
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           userscript_sha="$(cat /tmp/userscript.sha256)"
@@ -87,7 +89,7 @@ jobs:
           git add -A
           git status --short
           git commit -m 'feat: 完成 Telegram Web K V1 浏览体验' -m "userscript-sha256: ${userscript_sha}"
-          git push
+          git push origin "HEAD:${HEAD_BRANCH}"
           {
             echo '## Telegram Web K V1 分支预构建'
             echo
