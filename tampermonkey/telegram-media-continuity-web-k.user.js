@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web K 媒体续播（兼容验证版）
 // @namespace    telegram-air/media-continuity
-// @version      0.4.0-k8
+// @version      0.4.0-k9
 // @description  为 Telegram Web K 提供图片和视频连续浏览能力
 // @match        https://web.telegram.org/k/*
 // @run-at       document-idle
@@ -763,7 +763,8 @@
 	//#endregion
 	//#region tampermonkey/src/web-k/core/settings.js
 	var STORAGE_KEY = "tt.mediaContinuity.v1";
-	var DURATIONS = [
+	var PHOTO_DURATION_INPUT_PATTERN = /^(\d+)(?:\.(\d))?$/;
+	var DURATIONS = Object.freeze([
 		2e3,
 		3e3,
 		5e3,
@@ -771,7 +772,7 @@
 		1e4,
 		15e3,
 		3e4
-	];
+	]);
 	var BROWSE_DIRECTIONS = Object.freeze(["forward", "backward"]);
 	var MEDIA_FILTERS = Object.freeze([
 		"all",
@@ -788,11 +789,33 @@
 	function isPlainObject(value) {
 		return Boolean(value && typeof value === "object" && !Array.isArray(value));
 	}
+	function isValidPhotoDurationMs(value) {
+		return Number.isInteger(value) && value >= 1e3 && value <= 3e5 && value % 100 === 0;
+	}
+	function isPresetPhotoDurationMs(value) {
+		return DURATIONS.includes(value);
+	}
+	function parsePhotoDurationSeconds(value) {
+		const normalizedValue = typeof value === "string" ? value.trim() : "";
+		const match = PHOTO_DURATION_INPUT_PATTERN.exec(normalizedValue);
+		if (!match) return void 0;
+		const wholeSeconds = Number(match[1]);
+		const tenths = match[2] ? Number(match[2]) : 0;
+		if (!Number.isSafeInteger(wholeSeconds)) return void 0;
+		const durationMs = wholeSeconds * 1e3 + tenths * 100;
+		return isValidPhotoDurationMs(durationMs) ? durationMs : void 0;
+	}
+	function formatPhotoDurationMs(value) {
+		if (!isValidPhotoDurationMs(value)) return "";
+		const wholeSeconds = Math.floor(value / 1e3);
+		const tenths = value % 1e3 / 100;
+		return tenths ? `${wholeSeconds}.${tenths}` : String(wholeSeconds);
+	}
 	function validateSettings(value) {
 		const source = isPlainObject(value) ? value : {};
 		return {
 			continuousEnabled: typeof source.continuousEnabled === "boolean" ? source.continuousEnabled : DEFAULT_SETTINGS.continuousEnabled,
-			photoDurationMs: DURATIONS.includes(source.photoDurationMs) ? source.photoDurationMs : DEFAULT_SETTINGS.photoDurationMs,
+			photoDurationMs: isValidPhotoDurationMs(source.photoDurationMs) ? source.photoDurationMs : DEFAULT_SETTINGS.photoDurationMs,
 			browseDirection: BROWSE_DIRECTIONS.includes(source.browseDirection) ? source.browseDirection : DEFAULT_SETTINGS.browseDirection,
 			mediaFilter: MEDIA_FILTERS.includes(source.mediaFilter) ? source.mediaFilter : DEFAULT_SETTINGS.mediaFilter,
 			panelCollapsed: typeof source.panelCollapsed === "boolean" ? source.panelCollapsed : DEFAULT_SETTINGS.panelCollapsed
@@ -879,6 +902,13 @@
 	var FILTER_SKIP_DELAY_MS = 80;
 	var FILTER_SEQUENCE_MAX_SKIPS = 50;
 	var FILTER_SEQUENCE_TIMEOUT_MS = 15e3;
+	var EDITABLE_TARGET_SELECTOR$1 = [
+		"input",
+		"textarea",
+		"select",
+		"[contenteditable]:not([contenteditable=\"false\"])",
+		"[role=\"textbox\"]"
+	].join(", ");
 	var MEDIA_TYPE_LABELS = Object.freeze({
 		images: "图片",
 		videos: "视频"
@@ -952,7 +982,7 @@
 				this.prepareNavigationTarget(direction);
 			};
 			this.handleViewerKeyDown = (event) => {
-				if (event.repeat || !isElementVisible(this.viewer)) return;
+				if (event.repeat || !isElementVisible(this.viewer) || isEditableEventTarget$1(event)) return;
 				if (event.key === "ArrowRight") {
 					this.takeOverFilterSequence();
 					this.prepareNavigationTarget(1);
@@ -1230,9 +1260,11 @@
 			this.scheduleForCurrentMedia(true);
 		}
 		setPhotoDuration(duration) {
+			if (!isValidPhotoDurationMs(duration)) return false;
 			this.settings = updateSettings(this.settings, { photoDurationMs: duration });
 			this.panel.render(this.viewState());
-			this.scheduleForCurrentMedia(true);
+			if (this.currentMedia instanceof HTMLImageElement) this.scheduleForCurrentMedia(true);
+			return true;
 		}
 		setBrowseDirection(direction) {
 			this.takeOverFilterSequence();
@@ -1357,6 +1389,9 @@
 			debugLog("Web K 媒体查看器会话结束");
 		}
 	};
+	function isEditableEventTarget$1(event) {
+		return (typeof event.composedPath === "function" ? event.composedPath() : [event.target]).some((target) => target instanceof Element && target.matches(EDITABLE_TARGET_SELECTOR$1));
+	}
 	//#endregion
 	//#region tampermonkey/src/web-k/features/continuous-browsing/index.js
 	function createViewerSession(viewer, options) {
@@ -1364,6 +1399,8 @@
 	}
 	//#endregion
 	//#region tampermonkey/src/web-k/features/control-panel/control-panel.js
+	var CUSTOM_DURATION_VALUE = "custom";
+	var CUSTOM_DURATION_ERROR = "请输入 1～300 秒，最多一位小数";
 	var BROWSE_DIRECTION_LABELS = Object.freeze({
 		forward: "正向",
 		backward: "反向"
@@ -1375,6 +1412,8 @@
 	});
 	var ControlPanel = class {
 		constructor({ hostId, onToggleContinuous, onTogglePause, onNavigate, onSetPhotoDuration, onSetBrowseDirection, onSetMediaFilter, onSetPanelCollapsed }) {
+			this.isCustomDurationOpen = false;
+			this.currentPhotoDurationMs = DURATIONS[0];
 			this.host = document.createElement("div");
 			this.host.id = hostId;
 			this.host.style.cssText = "position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:2147483646;pointer-events:none;";
@@ -1404,7 +1443,7 @@
           box-shadow: 0 10px 32px rgba(0,0,0,.35);
           backdrop-filter: blur(14px);
         }
-        button, select {
+        button, select, input {
           box-sizing: border-box;
           min-height: 32px;
           border: 0;
@@ -1417,9 +1456,24 @@
         button:hover { background: rgba(255,255,255,.2); }
         button:disabled { cursor: not-allowed; opacity: .42; }
         button.primary[data-active="true"] { background: #2aabee; }
-        button[hidden], .panel[hidden], .launcher[hidden] { display: none !important; }
+        button[hidden], .panel[hidden], .launcher[hidden], .custom-duration[hidden] { display: none !important; }
         select { padding: 0 8px; }
+        input {
+          width: 68px;
+          padding: 0 7px;
+          outline: none;
+          user-select: text;
+        }
+        input:focus { box-shadow: 0 0 0 2px rgba(42,171,238,.72); }
+        input[aria-invalid="true"] { box-shadow: 0 0 0 2px rgba(255,92,92,.78); }
         option { color: #111; }
+        .duration-group, .custom-duration {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          flex-wrap: wrap;
+        }
+        .duration-unit { font-size: 12px; color: rgba(255,255,255,.82); }
         .status {
           min-width: 118px;
           max-width: 260px;
@@ -1451,10 +1505,11 @@
             gap: 4px;
             padding: 5px;
           }
-          button, select {
+          button, select, input {
             min-height: 30px;
             font-size: 12px;
           }
+          .duration-group { justify-content: center; }
           .status {
             order: 2;
             flex: 1 0 100%;
@@ -1475,9 +1530,24 @@
         <select id="direction" aria-label="自动浏览方向">
           ${BROWSE_DIRECTIONS.map((value) => `<option value="${value}">${BROWSE_DIRECTION_LABELS[value]}</option>`).join("")}
         </select>
-        <select id="duration" aria-label="图片停留时间">
-          ${DURATIONS.map((value) => `<option value="${value}">${value / 1e3} 秒</option>`).join("")}
-        </select>
+        <div class="duration-group">
+          <select id="duration" aria-label="图片停留时间">
+            ${DURATIONS.map((value) => `<option value="${value}">${formatPhotoDurationMs(value)} 秒</option>`).join("")}
+            <option id="custom-duration-option" value="${CUSTOM_DURATION_VALUE}">自定义…</option>
+          </select>
+          <div id="custom-duration" class="custom-duration" hidden>
+            <input
+              id="custom-duration-input"
+              type="text"
+              inputmode="decimal"
+              maxlength="5"
+              autocomplete="off"
+              aria-label="自定义图片停留秒数"
+            >
+            <span class="duration-unit" aria-hidden="true">秒</span>
+            <button id="apply-duration" type="button">应用</button>
+          </div>
+        </div>
         <span id="status" class="status" aria-live="polite">已就绪</span>
         <button id="collapse" type="button" aria-label="收起控制条">×</button>
       </div>
@@ -1494,6 +1564,9 @@
 			this.filter = this.shadow.querySelector("#filter");
 			this.direction = this.shadow.querySelector("#direction");
 			this.duration = this.shadow.querySelector("#duration");
+			this.customDuration = this.shadow.querySelector("#custom-duration");
+			this.customDurationInput = this.shadow.querySelector("#custom-duration-input");
+			this.customDurationOption = this.shadow.querySelector("#custom-duration-option");
 			for (const type of [
 				"pointerdown",
 				"mousedown",
@@ -1507,11 +1580,61 @@
 			this.next.addEventListener("click", () => onNavigate(1, false));
 			this.filter.addEventListener("change", () => onSetMediaFilter(this.filter.value));
 			this.direction.addEventListener("change", () => onSetBrowseDirection(this.direction.value));
-			this.duration.addEventListener("change", () => onSetPhotoDuration(Number(this.duration.value)));
+			this.duration.addEventListener("change", () => {
+				if (this.duration.value === CUSTOM_DURATION_VALUE) {
+					this.isCustomDurationOpen = true;
+					this.renderCustomDuration();
+					this.customDurationInput.focus();
+					this.customDurationInput.select();
+					return;
+				}
+				this.isCustomDurationOpen = false;
+				this.renderCustomDuration();
+				onSetPhotoDuration(Number(this.duration.value));
+			});
+			this.customDurationInput.addEventListener("input", () => {
+				this.customDurationInput.removeAttribute("aria-invalid");
+			});
+			this.customDurationInput.addEventListener("keydown", (event) => {
+				event.stopPropagation();
+				if (event.key !== "Enter") return;
+				event.preventDefault();
+				this.applyCustomPhotoDuration(onSetPhotoDuration);
+			});
+			this.shadow.querySelector("#apply-duration").addEventListener("click", () => {
+				this.applyCustomPhotoDuration(onSetPhotoDuration);
+			});
 			this.shadow.querySelector("#collapse").addEventListener("click", () => onSetPanelCollapsed(true));
 			this.launcher.addEventListener("click", () => onSetPanelCollapsed(false));
 		}
+		applyCustomPhotoDuration(onSetPhotoDuration) {
+			const durationMs = parsePhotoDurationSeconds(this.customDurationInput.value);
+			if (durationMs === void 0) {
+				this.customDurationInput.setAttribute("aria-invalid", "true");
+				this.setStatus(CUSTOM_DURATION_ERROR);
+				return;
+			}
+			this.currentPhotoDurationMs = durationMs;
+			this.isCustomDurationOpen = true;
+			this.customDurationInput.removeAttribute("aria-invalid");
+			this.customDurationInput.value = formatPhotoDurationMs(durationMs);
+			this.customDurationOption.textContent = `自定义（${formatPhotoDurationMs(durationMs)} 秒）`;
+			onSetPhotoDuration(durationMs);
+		}
+		renderCustomDuration() {
+			this.customDuration.hidden = !this.isCustomDurationOpen;
+			this.duration.value = this.isCustomDurationOpen ? CUSTOM_DURATION_VALUE : String(this.currentPhotoDurationMs);
+		}
 		render(state) {
+			this.currentPhotoDurationMs = state.photoDurationMs;
+			const isPresetDuration = isPresetPhotoDurationMs(state.photoDurationMs);
+			if (!isPresetDuration) this.isCustomDurationOpen = true;
+			const displayDuration = formatPhotoDurationMs(state.photoDurationMs);
+			this.customDurationOption.textContent = isPresetDuration ? "自定义…" : `自定义（${displayDuration} 秒）`;
+			if (this.shadow.activeElement !== this.customDurationInput) {
+				this.customDurationInput.value = displayDuration;
+				this.customDurationInput.removeAttribute("aria-invalid");
+			}
 			this.toggle.dataset.active = String(state.active);
 			this.toggle.textContent = state.active ? "连续浏览：开" : "连续浏览：关";
 			this.pause.textContent = state.paused ? "继续" : "暂停";
@@ -1520,7 +1643,7 @@
 			this.next.disabled = !state.canNext;
 			this.filter.value = state.mediaFilter;
 			this.direction.value = state.browseDirection;
-			this.duration.value = String(state.photoDurationMs);
+			this.renderCustomDuration();
 			this.panel.hidden = state.collapsed;
 			this.launcher.hidden = !state.collapsed;
 		}
@@ -1539,7 +1662,7 @@
 	}
 	//#endregion
 	//#region tampermonkey/src/web-k/version.js
-	var WEB_K_VERSION = "0.4.0-k8";
+	var WEB_K_VERSION = "0.4.0-k9";
 	//#endregion
 	//#region tampermonkey/src/web-k/features/debug/debug-api.js
 	function describeLastConfirmedTarget() {

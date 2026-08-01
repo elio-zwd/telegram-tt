@@ -6,7 +6,7 @@ import {
   runCleanupList,
 } from '../../core/cleanup.js';
 import { debugLog } from '../../core/logger.js';
-import { loadSettings, updateSettings } from '../../core/settings.js';
+import { isValidPhotoDurationMs, loadSettings, updateSettings } from '../../core/settings.js';
 import { describeElement, isElementVisible } from '../../platform/dom.js';
 import {
   findActiveMedia,
@@ -30,6 +30,13 @@ const COUNTDOWN_REFRESH_MS = 200;
 const FILTER_SKIP_DELAY_MS = 80;
 const FILTER_SEQUENCE_MAX_SKIPS = 50;
 const FILTER_SEQUENCE_TIMEOUT_MS = 15000;
+const EDITABLE_TARGET_SELECTOR = [
+  'input',
+  'textarea',
+  'select',
+  '[contenteditable]:not([contenteditable="false"])',
+  '[role="textbox"]',
+].join(', ');
 
 const MEDIA_TYPE_LABELS = Object.freeze({
   images: '图片',
@@ -105,7 +112,7 @@ export class ViewerSession {
       this.prepareNavigationTarget(direction);
     };
     this.handleViewerKeyDown = (event) => {
-      if (event.repeat || !isElementVisible(this.viewer)) return;
+      if (event.repeat || !isElementVisible(this.viewer) || isEditableEventTarget(event)) return;
       if (event.key === 'ArrowRight') {
         this.takeOverFilterSequence();
         this.prepareNavigationTarget(1);
@@ -454,9 +461,13 @@ export class ViewerSession {
   }
 
   setPhotoDuration(duration) {
+    if (!isValidPhotoDurationMs(duration)) return false;
     this.settings = updateSettings(this.settings, { photoDurationMs: duration });
     this.panel.render(this.viewState());
-    this.scheduleForCurrentMedia(true);
+    if (this.currentMedia instanceof HTMLImageElement) {
+      this.scheduleForCurrentMedia(true);
+    }
+    return true;
   }
 
   setBrowseDirection(direction) {
@@ -602,4 +613,13 @@ export class ViewerSession {
     this.panel.destroy();
     debugLog('Web K 媒体查看器会话结束');
   }
+}
+
+function isEditableEventTarget(event) {
+  const eventPath = typeof event.composedPath === 'function'
+    ? event.composedPath()
+    : [event.target];
+
+  return eventPath.some((target) => target instanceof Element
+    && target.matches(EDITABLE_TARGET_SELECTOR));
 }

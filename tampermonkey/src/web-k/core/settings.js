@@ -1,8 +1,12 @@
 import { debugLog } from './logger.js';
 
 const STORAGE_KEY = 'tt.mediaContinuity.v1';
+const PHOTO_DURATION_INPUT_PATTERN = /^(\d+)(?:\.(\d))?$/;
 
-export const DURATIONS = [2000, 3000, 5000, 8000, 10000, 15000, 30000];
+export const PHOTO_DURATION_MIN_MS = 1000;
+export const PHOTO_DURATION_MAX_MS = 300000;
+export const PHOTO_DURATION_STEP_MS = 100;
+export const DURATIONS = Object.freeze([2000, 3000, 5000, 8000, 10000, 15000, 30000]);
 export const BROWSE_DIRECTIONS = Object.freeze(['forward', 'backward']);
 export const MEDIA_FILTERS = Object.freeze(['all', 'images', 'videos']);
 
@@ -18,13 +22,44 @@ function isPlainObject(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+export function isValidPhotoDurationMs(value) {
+  return Number.isInteger(value)
+    && value >= PHOTO_DURATION_MIN_MS
+    && value <= PHOTO_DURATION_MAX_MS
+    && value % PHOTO_DURATION_STEP_MS === 0;
+}
+
+export function isPresetPhotoDurationMs(value) {
+  return DURATIONS.includes(value);
+}
+
+export function parsePhotoDurationSeconds(value) {
+  const normalizedValue = typeof value === 'string' ? value.trim() : '';
+  const match = PHOTO_DURATION_INPUT_PATTERN.exec(normalizedValue);
+  if (!match) return undefined;
+
+  const wholeSeconds = Number(match[1]);
+  const tenths = match[2] ? Number(match[2]) : 0;
+  if (!Number.isSafeInteger(wholeSeconds)) return undefined;
+
+  const durationMs = wholeSeconds * 1000 + tenths * PHOTO_DURATION_STEP_MS;
+  return isValidPhotoDurationMs(durationMs) ? durationMs : undefined;
+}
+
+export function formatPhotoDurationMs(value) {
+  if (!isValidPhotoDurationMs(value)) return '';
+  const wholeSeconds = Math.floor(value / 1000);
+  const tenths = (value % 1000) / PHOTO_DURATION_STEP_MS;
+  return tenths ? `${wholeSeconds}.${tenths}` : String(wholeSeconds);
+}
+
 export function validateSettings(value) {
   const source = isPlainObject(value) ? value : {};
   return {
     continuousEnabled: typeof source.continuousEnabled === 'boolean'
       ? source.continuousEnabled
       : DEFAULT_SETTINGS.continuousEnabled,
-    photoDurationMs: DURATIONS.includes(source.photoDurationMs)
+    photoDurationMs: isValidPhotoDurationMs(source.photoDurationMs)
       ? source.photoDurationMs
       : DEFAULT_SETTINGS.photoDurationMs,
     browseDirection: BROWSE_DIRECTIONS.includes(source.browseDirection)

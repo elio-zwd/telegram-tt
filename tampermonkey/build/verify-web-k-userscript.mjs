@@ -101,6 +101,14 @@ function verifyModuleBoundaries(modules) {
     '设置模块未校验正向和反向浏览方向',
   );
   assertCondition(settings.includes("mediaFilter: 'all'"), '设置模块缺少默认全部媒体筛选');
+  assertCondition(/PHOTO_DURATION_MIN_MS\s*=\s*1000\b/.test(settings), '自定义图片时间最小值必须为 1 秒');
+  assertCondition(/PHOTO_DURATION_MAX_MS\s*=\s*300000\b/.test(settings), '自定义图片时间最大值必须为 300 秒');
+  assertCondition(/PHOTO_DURATION_STEP_MS\s*=\s*100\b/.test(settings), '自定义图片时间必须使用 100ms 精度');
+  assertCondition(settings.includes('PHOTO_DURATION_INPUT_PATTERN = /^(\\d+)(?:\\.(\\d))?$/;'), '自定义图片时间必须只接受普通十进制和一位小数');
+  assertCondition(settings.includes('Number.isInteger(value)'), '图片时间毫秒值必须为整数');
+  assertCondition(settings.includes('value % PHOTO_DURATION_STEP_MS === 0'), '图片时间毫秒值必须限制为一位小数精度');
+  assertCondition(settings.includes('isValidPhotoDurationMs(source.photoDurationMs)'), '设置加载必须接受合法自定义图片时间');
+  assertCondition(!settings.includes('DURATIONS.includes(source.photoDurationMs)'), '设置加载不得把自定义时间回退到预设值');
   assertCondition(
     settings.includes('MEDIA_FILTERS.includes(source.mediaFilter)'),
     '设置模块未校验媒体类型筛选值',
@@ -128,6 +136,13 @@ function verifyModuleBoundaries(modules) {
   assertCondition(controlPanel.includes('onSetBrowseDirection'), '控制面板缺少方向回调');
   assertCondition(controlPanel.includes('id="filter"'), '控制面板缺少媒体类型筛选框');
   assertCondition(controlPanel.includes('onSetMediaFilter'), '控制面板缺少媒体筛选回调');
+  assertCondition(controlPanel.includes('value="${CUSTOM_DURATION_VALUE}"'), '控制面板缺少自定义图片时间选项');
+  assertCondition(controlPanel.includes('id="custom-duration-input"'), '控制面板缺少自定义时间输入框');
+  assertCondition(controlPanel.includes('aria-label="自定义图片停留秒数"'), '自定义时间输入框缺少可访问性标识');
+  assertCondition(controlPanel.includes('id="apply-duration"'), '控制面板缺少自定义时间应用按钮');
+  assertCondition(controlPanel.includes("event.key !== 'Enter'"), '自定义图片时间缺少 Enter 提交');
+  assertCondition(controlPanel.includes('parsePhotoDurationSeconds(this.customDurationInput.value)'), '自定义时间提交必须通过统一解析函数');
+  assertCondition(controlPanel.includes('durationMs === undefined'), '非法自定义时间必须被拒绝');
   assertCondition(controlPanel.includes('onNavigate(-1, false)'), '控制面板上一项必须保持 -1');
   assertCondition(controlPanel.includes('onNavigate(1, false)'), '控制面板下一项必须保持 1');
 
@@ -161,6 +176,12 @@ function verifyModuleBoundaries(modules) {
     viewerSession.includes('toggleContinuous()') && viewerSession.includes('continuousEnabled: this.active'),
     '连续浏览开关必须继续使用原设置持久化路径',
   );
+  const setPhotoDurationMethod = viewerSession.match(/setPhotoDuration\(duration\) \{([\s\S]*?)\n  \}/)?.[1] || '';
+  assertCondition(setPhotoDurationMethod.includes('if (!isValidPhotoDurationMs(duration)) return false;'), '会话必须拒绝非法图片时间');
+  assertCondition(setPhotoDurationMethod.includes('photoDurationMs: duration'), '合法图片时间必须使用现有设置持久化路径');
+  assertCondition(setPhotoDurationMethod.includes('this.currentMedia instanceof HTMLImageElement'), '只有当前图片需要重新开始完整倒计时');
+  assertCondition(!setPhotoDurationMethod.includes('takeOverFilterSequence'), '修改图片时间不得接管媒体筛选序列');
+  assertCondition(viewerSession.includes('isEditableEventTarget(event)'), '方向键监听必须避开自定义输入框');
 
   const keyboardShortcuts = modules.get('features/shortcuts/keyboard-shortcuts.js');
   assertCondition(!keyboardShortcuts.includes('../../platform/'), '快捷键模块不得依赖 platform 模块');
@@ -298,6 +319,12 @@ async function verifyGeneratedOutput() {
   assertCondition(generated.includes('createKeyboardShortcuts'), '生成文件缺少快捷键功能');
   assertCondition(generated.includes('toggle-continuous'), '生成文件缺少连续浏览开关快捷键');
   assertCondition(generated.includes('toggle-pause'), '生成文件缺少暂停快捷键');
+  assertCondition(/PHOTO_DURATION_MIN_MS\s*=\s*1e3\b|PHOTO_DURATION_MIN_MS\s*=\s*1000\b/.test(generated), '生成文件缺少 1 秒自定义下限');
+  assertCondition(/PHOTO_DURATION_MAX_MS\s*=\s*3e5\b|PHOTO_DURATION_MAX_MS\s*=\s*300000\b/.test(generated), '生成文件缺少 300 秒自定义上限');
+  assertCondition(generated.includes('custom-duration-input'), '生成文件缺少自定义图片时间输入框');
+  assertCondition(generated.includes('自定义图片停留秒数'), '生成文件缺少自定义输入可访问性标识');
+  assertCondition(generated.includes('apply-duration'), '生成文件缺少自定义图片时间应用按钮');
+  assertCondition(generated.includes('请输入 1～300 秒，最多一位小数'), '生成文件缺少非法输入提示');
 
   assertCondition(!/\bimport\s*\(/.test(generated), '生成文件禁止运行时动态 import');
   assertCondition(!/^\s*(?:import|export)\s/m.test(generated), '生成文件仍包含 ES Module 语句');
