@@ -1,1 +1,3 @@
-import './legacy-main.js';
+import { createApp } from './app.js';
+
+createApp().start();
