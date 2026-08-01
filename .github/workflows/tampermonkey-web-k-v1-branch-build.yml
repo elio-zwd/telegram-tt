@@ -35,8 +35,13 @@ jobs:
           decode() {
             local output="$1"
             shift
+            local encoded_file
+            encoded_file="$(mktemp)"
+            cat "$@" > "$encoded_file"
+            printf 'decode %s: %s bytes\n' "$output" "$(wc -c < "$encoded_file")"
             mkdir -p "$(dirname "$output")"
-            cat "$@" | base64 --decode | gzip -d > "$output"
+            base64 --decode "$encoded_file" | gzip -d > "$output"
+            rm -f "$encoded_file"
           }
           decode tampermonkey/src/web-k/features/continuous-browsing/viewer-session.js \
             .build-input/viewer-session.part1.b64 \
@@ -44,7 +49,10 @@ jobs:
           decode tampermonkey/src/web-k/features/control-panel/control-panel.js \
             .build-input/control-panel.js.gz.b64
           decode tampermonkey/build/verify-web-k-userscript.mjs \
-            .build-input/verifier.part1.b64 \
+            .build-input/verifier.part1a.b64 \
+            .build-input/verifier.part1b.b64 \
+            .build-input/verifier.part1c.b64 \
+            .build-input/verifier.part1d.b64 \
             .build-input/verifier.part2.b64
           decode tampermonkey/README.md \
             .build-input/readme.part1.b64 \
