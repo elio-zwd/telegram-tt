@@ -8,6 +8,7 @@ export function createLifecycle({
   captureSourceTarget,
   clearCloseProbe,
   clearLocationTimers,
+  continuation,
   createSession,
   findMediaViewer,
   installDebugApi,
@@ -17,10 +18,13 @@ export function createLifecycle({
   function scanPage() {
     runtime.scanTimer = 0;
     if (runtime.session && (!runtime.session.viewer.isConnected || !isElementVisible(runtime.session.viewer))) {
-      const closeSnapshot = runtime.session.createCloseSnapshot();
+      const closedViewer = runtime.session.viewer;
+      const isContinuationClose = continuation?.shouldSkipClosePosition(closedViewer);
+      const closeSnapshot = isContinuationClose ? undefined : runtime.session.createCloseSnapshot();
       runtime.session.destroy();
       runtime.session = undefined;
-      locateMessageAfterClose(closeSnapshot);
+      if (isContinuationClose) continuation.handleViewerClosed(closedViewer);
+      else locateMessageAfterClose(closeSnapshot);
     }
 
     const viewer = findMediaViewer();
@@ -32,7 +36,8 @@ export function createLifecycle({
     if (runtime.session) runtime.session.destroy();
     clearLocationTimers();
     runtime.activeLocationSequenceId += 1;
-    runtime.session = createSession(viewer);
+    const continuationContext = continuation?.takeSessionContext(viewer);
+    runtime.session = createSession(viewer, continuationContext);
   }
 
   function scheduleScan() {
@@ -41,6 +46,7 @@ export function createLifecycle({
   }
 
   function handlePageHide() {
+    continuation?.cancel('pagehide');
     clearCloseProbe();
     clearLocationTimers();
     runtime.activeLocationSequenceId += 1;
