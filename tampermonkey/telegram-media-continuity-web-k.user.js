@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Telegram Web K 媒体续播（兼容验证版）
 // @namespace    telegram-air/media-continuity
-// @version      0.4.0-k10
+// @version      0.4.0-k11
 // @description  为 Telegram Web K 提供图片和视频连续浏览能力
 // @match        https://web.telegram.org/k/*
 // @run-at       document-idle
@@ -33,14 +33,17 @@
 	var SCAN_DELAY_MS = 160;
 	var PERIODIC_SCAN_MS = 1e3;
 	var INITIALIZED_MARKER = "web-k-ready";
-	function createLifecycle({ captureSourceTarget, clearCloseProbe, clearLocationTimers, createSession, findMediaViewer, installDebugApi, isElementVisible, locateMessageAfterClose }) {
+	function createLifecycle({ captureSourceTarget, clearCloseProbe, clearLocationTimers, continuation, createSession, findMediaViewer, installDebugApi, isElementVisible, locateMessageAfterClose }) {
 		function scanPage() {
 			runtime.scanTimer = 0;
 			if (runtime.session && (!runtime.session.viewer.isConnected || !isElementVisible(runtime.session.viewer))) {
-				const closeSnapshot = runtime.session.createCloseSnapshot();
+				const closedViewer = runtime.session.viewer;
+				const isContinuationClose = continuation?.shouldSkipClosePosition(closedViewer);
+				const closeSnapshot = isContinuationClose ? void 0 : runtime.session.createCloseSnapshot();
 				runtime.session.destroy();
 				runtime.session = void 0;
-				locateMessageAfterClose(closeSnapshot);
+				if (isContinuationClose) continuation.handleViewerClosed(closedViewer);
+				else locateMessageAfterClose(closeSnapshot);
 			}
 			const viewer = findMediaViewer();
 			if (!viewer) return;
@@ -51,13 +54,15 @@
 			if (runtime.session) runtime.session.destroy();
 			clearLocationTimers();
 			runtime.activeLocationSequenceId += 1;
-			runtime.session = createSession(viewer);
+			const continuationContext = continuation?.takeSessionContext(viewer);
+			runtime.session = createSession(viewer, continuationContext);
 		}
 		function scheduleScan() {
 			if (runtime.scanTimer) return;
 			runtime.scanTimer = window.setTimeout(scanPage, SCAN_DELAY_MS);
 		}
 		function handlePageHide() {
+			continuation?.cancel("pagehide");
 			clearCloseProbe();
 			clearLocationTimers();
 			runtime.activeLocationSequenceId += 1;
@@ -196,11 +201,34 @@
 	}
 	//#endregion
 	//#region tampermonkey/src/web-k/platform/media-viewer.js
+	var CLOSE_BUTTON_SELECTORS = Object.freeze([
+		".media-viewer-close",
+		".media-viewer-head .MediaViewerActions .icon-close",
+		".media-viewer-head button .icon-close",
+		".media-viewer-topbar button .icon-close"
+	]);
 	var mediaNodeIds = /* @__PURE__ */ new WeakMap();
 	var nextMediaNodeId = 1;
 	function findMediaViewer() {
 		const viewer = document.querySelector(".media-viewer-whole");
 		return isElementVisible(viewer) ? viewer : void 0;
+	}
+	function dispatchCloseMediaViewer(viewer) {
+		if (!(viewer instanceof Element) || !viewer.isConnected) return false;
+		for (const selector of CLOSE_BUTTON_SELECTORS) {
+			const candidate = viewer.querySelector(selector);
+			const button = candidate?.matches("button") ? candidate : candidate?.closest("button");
+			if (!(button instanceof HTMLElement) || !isElementVisible(button)) continue;
+			button.click();
+			return true;
+		}
+		window.dispatchEvent(new KeyboardEvent("keydown", {
+			key: "Escape",
+			code: "Escape",
+			bubbles: true,
+			cancelable: true
+		}));
+		return true;
 	}
 	function findMediaRoot(viewer) {
 		return viewer.querySelector(".media-viewer-movers") || viewer;
@@ -265,6 +293,7 @@
 	//#endregion
 	//#region tampermonkey/src/web-k/platform/message-list.js
 	var CHAT_SCROLL_SELECTOR = ".scrollable.scrollable-y.bubbles-scrollable";
+	var MEDIA_OPEN_SELECTORS = Object.freeze([".media-photo-aspect", ".attachment"]);
 	function findMessageNode(target) {
 		let current = target instanceof Element ? target : void 0;
 		for (let depth = 0; current && depth < 14; depth += 1) {
@@ -377,12 +406,17 @@
 			peerKey: String(target.peerKey || ""),
 			messageKey: String(target.messageKey || ""),
 			albumIndex: Number.isInteger(target.albumIndex) ? target.albumIndex : 0,
+			mediaType: target.mediaType,
 			source: target.source || "source-message",
 			confidence: target.confidence || "high",
 			confirmedAt: target.confirmedAt || 0,
 			mediaFingerprint: target.mediaFingerprint || "",
 			sourceMessageNode: target.sourceMessageNode
 		};
+	}
+	function getMediaTargetKey(target) {
+		if (!target?.peerKey || !target.messageKey) return "";
+		return `${target.peerKey}:${target.messageKey}:${Number.isInteger(target.albumIndex) ? target.albumIndex : 0}`;
 	}
 	function isChatMediaNode(node) {
 		if (!(node instanceof Element) || node.classList.contains("pinned-message")) return false;
@@ -399,6 +433,11 @@
 		const index = Array.from(parent.children).filter((item) => item.classList?.contains("album-item")).indexOf(node);
 		return index >= 0 ? index : 0;
 	}
+	function getMessageMediaType(node) {
+		if (!(node instanceof Element)) return void 0;
+		if (node.classList.contains("video") || node.classList.contains("is-gif") || node.querySelector("video, .video, .is-gif")) return "videos";
+		if (node.classList.contains("photo") || node.querySelector("img, .media-photo-aspect")) return "images";
+	}
 	function createTargetFromMessageNode(node) {
 		const identity = getMessageIdentity(node);
 		if (!identity?.messageId || !identity.peerId) return void 0;
@@ -407,6 +446,7 @@
 			peerKey: identity.peerId,
 			messageKey: identity.messageId,
 			albumIndex: getAlbumItemIndex(node),
+			mediaType: getMessageMediaType(node),
 			source: "source-message",
 			confidence: "high",
 			confirmedAt: 0,
@@ -437,7 +477,7 @@
 		if (!target) return -1;
 		const nodeIndex = targets.findIndex((candidate) => candidate.sourceMessageNode === target.sourceMessageNode);
 		if (nodeIndex >= 0) return nodeIndex;
-		return targets.findIndex((candidate) => candidate.peerKey === target.peerKey && candidate.messageKey === target.messageKey);
+		return targets.findIndex((candidate) => candidate.peerKey === target.peerKey && candidate.messageKey === target.messageKey && candidate.albumIndex === target.albumIndex);
 	}
 	function findAdjacentMediaTarget(target, direction) {
 		if (!target || !direction) return void 0;
@@ -461,6 +501,73 @@
 			bestCount = count;
 		}
 		return bestKey;
+	}
+	function createChatMediaSnapshot(peerKey) {
+		const container = findActiveChatScrollContainer();
+		if (!container) return void 0;
+		const activePeerKey = getActiveChatPeerKey(container);
+		if (peerKey && activePeerKey && peerKey !== activePeerKey) return void 0;
+		const targets = collectOrderedChatMediaTargets(peerKey || activePeerKey);
+		return {
+			container,
+			activePeerKey,
+			scrollTop: container.scrollTop,
+			scrollHeight: container.scrollHeight,
+			clientHeight: container.clientHeight,
+			targets,
+			targetKeys: targets.map(getMediaTargetKey).filter(Boolean)
+		};
+	}
+	function requestChatMediaLoad(peerKey, direction) {
+		const snapshot = createChatMediaSnapshot(peerKey);
+		if (!snapshot || !direction) return false;
+		const top = direction > 0 ? snapshot.container.scrollHeight : 0;
+		if (typeof snapshot.container.scrollTo === "function") snapshot.container.scrollTo({
+			top,
+			behavior: "auto"
+		});
+		else snapshot.container.scrollTop = top;
+		snapshot.container.dispatchEvent(new Event("scroll", { bubbles: true }));
+		return true;
+	}
+	function findContinuationMediaTarget(anchorTarget, direction, previousTargetKeys = [], attemptedTargetKeys = []) {
+		if (!anchorTarget || !direction) return void 0;
+		const targets = collectOrderedChatMediaTargets(anchorTarget.peerKey);
+		const attempted = new Set(attemptedTargetKeys);
+		const index = findTargetIndex(targets, anchorTarget);
+		if (index >= 0) {
+			const candidate = targets[index + (direction > 0 ? 1 : -1)];
+			if (candidate && !attempted.has(getMediaTargetKey(candidate))) return cloneMediaTarget(candidate);
+		}
+		const previous = new Set(previousTargetKeys);
+		const newTargets = targets.filter((candidate) => {
+			const key = getMediaTargetKey(candidate);
+			return key && !previous.has(key) && !attempted.has(key);
+		});
+		return cloneMediaTarget(direction > 0 ? newTargets[0] : newTargets[newTargets.length - 1]);
+	}
+	function findExactMediaTargetNode(target) {
+		return collectOrderedChatMediaTargets(target?.peerKey).find((candidate) => candidate.messageKey === target?.messageKey && candidate.albumIndex === target?.albumIndex)?.sourceMessageNode;
+	}
+	function dispatchOpenMediaTarget(target) {
+		const node = findExactMediaTargetNode(target);
+		if (!(node instanceof HTMLElement) || !node.isConnected) return false;
+		node.scrollIntoView({
+			block: "center",
+			inline: "nearest",
+			behavior: "auto"
+		});
+		let clickTarget;
+		for (const selector of MEDIA_OPEN_SELECTORS) {
+			const candidate = node.matches(selector) ? node : node.querySelector(selector);
+			if (candidate instanceof HTMLElement) {
+				clickTarget = candidate;
+				break;
+			}
+		}
+		if (!(clickTarget instanceof HTMLElement)) clickTarget = node;
+		clickTarget.click();
+		return true;
 	}
 	function findExactMessageNode(target) {
 		const container = findActiveChatScrollContainer();
@@ -927,7 +1034,7 @@
 	var COUNTDOWN_REFRESH_MS = 200;
 	var FILTER_SKIP_DELAY_MS = 80;
 	var FILTER_SEQUENCE_MAX_SKIPS = 50;
-	var FILTER_SEQUENCE_TIMEOUT_MS = 15e3;
+	var FILTER_SEQUENCE_TIMEOUT_MS$1 = 15e3;
 	var BUFFERING_WARNING_MS = 15e3;
 	var EDITABLE_TARGET_SELECTOR$1 = [
 		"input",
@@ -1477,7 +1584,7 @@
 			return Boolean(sequence && this.filterSequence === sequence && sequence.id === this.filterSequenceId && sequence.filter === this.settings.mediaFilter && sequence.direction === this.getAutomaticDirection() && this.active && !this.destroyed);
 		}
 		hasFilterSequenceTimedOut(sequence) {
-			return Date.now() - sequence.startedAt >= FILTER_SEQUENCE_TIMEOUT_MS;
+			return Date.now() - sequence.startedAt >= FILTER_SEQUENCE_TIMEOUT_MS$1;
 		}
 		cancelFilterSequence() {
 			this.filterSkipTimer = clearTimeoutId(this.filterSkipTimer);
@@ -1827,8 +1934,9 @@
 	}
 	//#endregion
 	//#region tampermonkey/src/web-k/features/continuous-browsing/index.js
-	function createViewerSession(viewer, options) {
-		return new ViewerSession(viewer, options);
+	function createViewerSession(viewer, options = {}) {
+		const { SessionClass = ViewerSession, ...sessionOptions } = options;
+		return new SessionClass(viewer, sessionOptions);
 	}
 	//#endregion
 	//#region tampermonkey/src/web-k/features/control-panel/control-panel.js
@@ -2134,7 +2242,7 @@
 	}
 	//#endregion
 	//#region tampermonkey/src/web-k/version.js
-	var WEB_K_VERSION = "0.4.0-k10";
+	var WEB_K_VERSION = "0.4.0-k11";
 	//#endregion
 	//#region tampermonkey/src/web-k/features/debug/debug-api.js
 	function describeLastConfirmedTarget() {
@@ -2480,6 +2588,358 @@
 		});
 	}
 	//#endregion
+	//#region tampermonkey/src/web-k/features/media-stream-continuation/continuation-viewer-session.js
+	var USER_PAUSE_REASON = "user";
+	var HOVER_PAUSE_REASON = "hover";
+	var ContinuationViewerSession = class extends ViewerSession {
+		constructor(viewer, { continuation, continuationContext, ...options }) {
+			super(viewer, options);
+			this.continuation = continuation;
+			this.continuationReady = true;
+			this.restoreContinuationContext(continuationContext);
+			this.refresh();
+		}
+		refresh() {
+			if (this.continuationReady !== true) return;
+			super.refresh();
+		}
+		addPauseReason(reason, status, shouldRender = true) {
+			if (reason === HOVER_PAUSE_REASON && isLoopMedia(this.currentMedia)) return;
+			super.addPauseReason(reason, status, shouldRender);
+		}
+		restoreContinuationContext(context) {
+			const sequence = context?.filterSequence;
+			if (sequence && sequence.direction === this.getAutomaticDirection() && sequence.filter === this.settings.mediaFilter && Number.isFinite(sequence.startedAt)) {
+				this.filterSequenceId += 1;
+				this.filterSequence = {
+					id: this.filterSequenceId,
+					direction: sequence.direction,
+					filter: sequence.filter,
+					startedAt: sequence.startedAt,
+					skipped: Number.isInteger(sequence.skipped) ? sequence.skipped : 0,
+					lastFingerprint: void 0
+				};
+				this.blockCurrentTargetConfirmation = true;
+			}
+			if (context?.pauseStatus) this.addPauseReason(USER_PAUSE_REASON, context.pauseStatus, false);
+		}
+		navigateOnce(direction, automatic, filterSequence) {
+			if (!(automatic && !this.destroyed && !this.isNavigating && this.active && !this.hasAutomationPause() && (!filterSequence || this.isFilterSequenceCurrent(filterSequence)) && !getNavigationButton(this.viewer, direction))) {
+				super.navigateOnce(direction, automatic, filterSequence);
+				return;
+			}
+			if (filterSequence && this.hasFilterSequenceTimedOut(filterSequence)) {
+				super.navigateOnce(direction, automatic, filterSequence);
+				return;
+			}
+			const anchorTarget = cloneMediaTarget(this.targetTracker.pendingMediaTarget || this.getLastConfirmedMediaTarget());
+			const continuationFilterSequence = filterSequence ? {
+				direction: filterSequence.direction,
+				filter: filterSequence.filter,
+				startedAt: filterSequence.startedAt,
+				skipped: filterSequence.skipped
+			} : void 0;
+			if (!this.continuation?.start({
+				viewer: this.viewer,
+				direction,
+				anchorTarget,
+				filterSequence: continuationFilterSequence,
+				onFailure: (message) => {
+					if (!this.destroyed) this.addPauseReason(USER_PAUSE_REASON, message);
+				}
+			})) {
+				const message = filterSequence ? direction > 0 ? "已到当前媒体末尾，未找到更多匹配媒体" : "已到当前媒体开头，未找到更多匹配媒体" : direction > 0 ? "未能开始加载更多更新媒体，连续浏览已暂停" : "未能开始加载更多历史媒体，连续浏览已暂停";
+				this.addPauseReason(USER_PAUSE_REASON, message);
+				return;
+			}
+			this.clearTimer();
+			this.completeNavigationAttempt();
+			this.cancelFilterSequence();
+			this.filterSequenceId += 1;
+			this.blockCurrentTargetConfirmation = true;
+			this.panel.render(this.viewState());
+			this.panel.setStatus(direction > 0 ? "正在加载更多更新媒体" : "正在加载更多历史媒体");
+		}
+	};
+	//#endregion
+	//#region tampermonkey/src/web-k/features/media-stream-continuation/controller.js
+	var CONTINUATION_TIMEOUT_MS = 2e4;
+	var FILTER_SEQUENCE_TIMEOUT_MS = 15e3;
+	var MAX_SCROLL_ATTEMPTS = 8;
+	var CLOSE_TIMEOUT_MS = 3e3;
+	var OPEN_TIMEOUT_MS = 3e3;
+	var LOAD_CHANGE_TIMEOUT_MS = 1800;
+	var POLL_INTERVAL_MS = 100;
+	var MediaStreamContinuationController = class {
+		constructor() {
+			this.nextOperationId = 1;
+			this.operation = void 0;
+		}
+		start({ viewer, direction, anchorTarget, filterSequence, onFailure }) {
+			if (!(viewer instanceof Element) || !viewer.isConnected || !direction) return false;
+			const anchor = cloneMediaTarget(anchorTarget);
+			if (!anchor?.peerKey || !anchor.messageKey) return false;
+			const snapshot = createChatMediaSnapshot(anchor.peerKey);
+			if (!snapshot || snapshot.activePeerKey && snapshot.activePeerKey !== anchor.peerKey) return false;
+			this.cancel("replaced");
+			const operation = {
+				id: this.nextOperationId,
+				viewer,
+				direction: direction > 0 ? 1 : -1,
+				anchorTarget: anchor,
+				filterSequence: cloneFilterSequence(filterSequence),
+				onFailure,
+				startedAt: Date.now(),
+				state: "closing",
+				scrollAttempts: 0,
+				previousTargetKeys: snapshot.targetKeys,
+				attemptedTargetKeys: /* @__PURE__ */ new Set(),
+				sessionContext: void 0,
+				closeTimer: 0,
+				cancelWait: void 0,
+				cleanup: []
+			};
+			this.nextOperationId += 1;
+			this.operation = operation;
+			if (!dispatchCloseMediaViewer(viewer)) {
+				this.failBeforeClose(operation, "无法安全关闭当前媒体查看器，连续浏览已暂停");
+				return false;
+			}
+			this.installUserTakeover(operation);
+			operation.closeTimer = window.setTimeout(() => {
+				operation.closeTimer = 0;
+				if (!this.isCurrent(operation) || operation.state !== "closing") return;
+				const activeViewer = findMediaViewer();
+				if (!activeViewer || activeViewer !== viewer) {
+					this.handleViewerClosed(viewer);
+					return;
+				}
+				this.failBeforeClose(operation, "媒体查看器关闭超时，连续浏览已暂停");
+			}, CLOSE_TIMEOUT_MS);
+			debugLog("开始同频道媒体续流", {
+				operationId: operation.id,
+				direction: operation.direction
+			});
+			return true;
+		}
+		shouldSkipClosePosition(viewer) {
+			const operation = this.operation;
+			return Boolean(operation && operation.viewer === viewer && operation.state !== "cancelled");
+		}
+		handleViewerClosed(viewer) {
+			const operation = this.operation;
+			if (!operation || operation.viewer !== viewer || operation.state !== "closing") return false;
+			window.clearTimeout(operation.closeTimer);
+			operation.closeTimer = 0;
+			operation.state = "searching";
+			this.run(operation);
+			return true;
+		}
+		takeSessionContext(viewer) {
+			const operation = this.operation;
+			if (!operation || operation.state !== "opening" || !(viewer instanceof Element)) return void 0;
+			const context = operation.sessionContext;
+			this.finish(operation, "resumed");
+			return context;
+		}
+		cancel(reason = "cancelled") {
+			const operation = this.operation;
+			if (!operation) return;
+			this.finish(operation, reason);
+		}
+		async run(operation) {
+			const deadlineAt = Math.min(operation.startedAt + CONTINUATION_TIMEOUT_MS, operation.filterSequence ? operation.filterSequence.startedAt + FILTER_SEQUENCE_TIMEOUT_MS : Number.POSITIVE_INFINITY);
+			while (this.isCurrent(operation) && Date.now() < deadlineAt) {
+				const snapshot = createChatMediaSnapshot(operation.anchorTarget.peerKey);
+				if (!snapshot || snapshot.activePeerKey && snapshot.activePeerKey !== operation.anchorTarget.peerKey) {
+					this.finish(operation, "peer-changed");
+					return;
+				}
+				const candidate = findContinuationMediaTarget(operation.anchorTarget, operation.direction, operation.previousTargetKeys, operation.attemptedTargetKeys);
+				if (candidate) {
+					const opened = await this.openTarget(operation, candidate, void 0);
+					if (!this.isCurrent(operation) || opened) return;
+					operation.attemptedTargetKeys.add(getMediaTargetKey(candidate));
+					break;
+				}
+				if (operation.scrollAttempts >= MAX_SCROLL_ATTEMPTS) break;
+				const before = snapshot;
+				if (!requestChatMediaLoad(operation.anchorTarget.peerKey, operation.direction)) break;
+				operation.scrollAttempts += 1;
+				operation.previousTargetKeys = before.targetKeys;
+				await this.waitForListChange(operation, before);
+			}
+			if (!this.isCurrent(operation)) return;
+			const status = Boolean(operation.filterSequence && Date.now() >= operation.filterSequence.startedAt + FILTER_SEQUENCE_TIMEOUT_MS) ? "筛选跳过超过总时限，连续浏览已暂停" : operation.direction > 0 ? "未找到更多更新媒体，连续浏览已暂停" : "未找到更多历史媒体，连续浏览已暂停";
+			const reopened = await this.openTarget(operation, operation.anchorTarget, status);
+			if (!this.isCurrent(operation) || reopened) return;
+			this.finish(operation, "no-more-media");
+		}
+		async openTarget(operation, target, pauseStatus) {
+			if (!this.isCurrent(operation)) return false;
+			operation.state = "opening";
+			operation.sessionContext = {
+				target: cloneMediaTarget(target),
+				filterSequence: pauseStatus ? void 0 : cloneFilterSequence(operation.filterSequence),
+				pauseStatus
+			};
+			if (!dispatchOpenMediaTarget(target)) {
+				operation.state = "searching";
+				operation.sessionContext = void 0;
+				return false;
+			}
+			const viewer = await this.waitForViewer(operation);
+			if (!this.isCurrent(operation)) return Boolean(viewer);
+			if (viewer) return true;
+			operation.state = "searching";
+			operation.sessionContext = void 0;
+			return false;
+		}
+		waitForListChange(operation, before) {
+			return new Promise((resolve) => {
+				if (!this.isCurrent(operation)) {
+					resolve(void 0);
+					return;
+				}
+				let settled = false;
+				let pollTimer = 0;
+				let timeoutTimer = 0;
+				const observer = new MutationObserver(check);
+				const finishWait = (result) => {
+					if (settled) return;
+					settled = true;
+					observer.disconnect();
+					window.clearTimeout(pollTimer);
+					window.clearTimeout(timeoutTimer);
+					if (operation.cancelWait === cancelWait) operation.cancelWait = void 0;
+					resolve(result);
+				};
+				const cancelWait = () => finishWait(void 0);
+				operation.cancelWait = cancelWait;
+				function check() {
+					window.clearTimeout(pollTimer);
+					pollTimer = 0;
+					if (!operation || operation.state === "cancelled") {
+						finishWait(void 0);
+						return;
+					}
+					const after = createChatMediaSnapshot(operation.anchorTarget.peerKey);
+					if (!after) return;
+					if (after.targetKeys.length !== before.targetKeys.length || after.targetKeys.some((key, index) => key !== before.targetKeys[index]) || after.scrollHeight !== before.scrollHeight) {
+						finishWait(after);
+						return;
+					}
+					pollTimer = window.setTimeout(check, POLL_INTERVAL_MS);
+				}
+				observer.observe(before.container, {
+					childList: true,
+					subtree: true
+				});
+				pollTimer = window.setTimeout(check, POLL_INTERVAL_MS);
+				timeoutTimer = window.setTimeout(() => {
+					finishWait(createChatMediaSnapshot(operation.anchorTarget.peerKey));
+				}, LOAD_CHANGE_TIMEOUT_MS);
+			});
+		}
+		waitForViewer(operation) {
+			return new Promise((resolve) => {
+				if (!this.isCurrent(operation)) {
+					resolve(void 0);
+					return;
+				}
+				let settled = false;
+				let pollTimer = 0;
+				let timeoutTimer = 0;
+				const observer = new MutationObserver(check);
+				const finishWait = (viewer) => {
+					if (settled) return;
+					settled = true;
+					observer.disconnect();
+					window.clearTimeout(pollTimer);
+					window.clearTimeout(timeoutTimer);
+					if (operation.cancelWait === cancelWait) operation.cancelWait = void 0;
+					resolve(viewer);
+				};
+				const cancelWait = () => finishWait(void 0);
+				operation.cancelWait = cancelWait;
+				function check() {
+					window.clearTimeout(pollTimer);
+					pollTimer = 0;
+					const viewer = findMediaViewer();
+					if (viewer) {
+						finishWait(viewer);
+						return;
+					}
+					if (!operation || operation.state === "cancelled") {
+						finishWait(void 0);
+						return;
+					}
+					pollTimer = window.setTimeout(check, POLL_INTERVAL_MS);
+				}
+				observer.observe(document.body || document.documentElement, {
+					childList: true,
+					subtree: true
+				});
+				pollTimer = window.setTimeout(check, POLL_INTERVAL_MS);
+				timeoutTimer = window.setTimeout(() => finishWait(void 0), OPEN_TIMEOUT_MS);
+			});
+		}
+		installUserTakeover(operation) {
+			const cancelForUser = () => {
+				if (!this.isCurrent(operation)) return;
+				this.finish(operation, "user-takeover");
+			};
+			document.addEventListener("pointerdown", cancelForUser, true);
+			window.addEventListener("keydown", cancelForUser, true);
+			window.addEventListener("popstate", cancelForUser);
+			window.addEventListener("hashchange", cancelForUser);
+			operation.cleanup.push(() => document.removeEventListener("pointerdown", cancelForUser, true), () => window.removeEventListener("keydown", cancelForUser, true), () => window.removeEventListener("popstate", cancelForUser), () => window.removeEventListener("hashchange", cancelForUser));
+		}
+		failBeforeClose(operation, message) {
+			if (this.isCurrent(operation) && typeof operation.onFailure === "function") operation.onFailure(message);
+			this.finish(operation, "close-failed");
+		}
+		isCurrent(operation) {
+			return Boolean(operation && this.operation === operation && operation.state !== "cancelled");
+		}
+		finish(operation, reason) {
+			if (!operation || this.operation !== operation) return;
+			operation.state = "cancelled";
+			window.clearTimeout(operation.closeTimer);
+			operation.cancelWait?.();
+			operation.cancelWait = void 0;
+			while (operation.cleanup.length) operation.cleanup.pop()();
+			this.operation = void 0;
+			debugLog("结束同频道媒体续流", {
+				operationId: operation.id,
+				reason,
+				scrollAttempts: operation.scrollAttempts
+			});
+		}
+	};
+	function cloneFilterSequence(sequence) {
+		if (!sequence || !Number.isFinite(sequence.startedAt)) return void 0;
+		return {
+			direction: sequence.direction > 0 ? 1 : -1,
+			filter: sequence.filter,
+			startedAt: sequence.startedAt,
+			skipped: Number.isInteger(sequence.skipped) ? sequence.skipped : 0
+		};
+	}
+	//#endregion
+	//#region tampermonkey/src/web-k/features/media-stream-continuation/index.js
+	function createMediaStreamContinuation() {
+		return new MediaStreamContinuationController();
+	}
+	function prepareContinuationSessionContext(context) {
+		const target = cloneMediaTarget(context?.target);
+		if (!target) return;
+		runtime.lastSourceTarget = {
+			...target,
+			capturedAt: Date.now()
+		};
+	}
+	//#endregion
 	//#region tampermonkey/src/web-k/features/shortcuts/keyboard-shortcuts.js
 	var EDITABLE_TARGET_SELECTOR = [
 		"input",
@@ -2548,12 +3008,18 @@
 	var CONTROL_PANEL_HOST_ID = "telegram-media-continuity-host";
 	function createApp() {
 		const debugFeature = createDebugFeature({ scriptId: CONTROL_PANEL_HOST_ID });
+		const continuation = createMediaStreamContinuation();
 		const lifecycle = createLifecycle({
 			captureSourceTarget: (event) => captureSourceProbe(event, CONTROL_PANEL_HOST_ID),
 			clearCloseProbe: debugFeature.clearCloseProbe,
 			clearLocationTimers,
-			createSession: (viewer) => {
+			continuation,
+			createSession: (viewer, continuationContext) => {
+				prepareContinuationSessionContext(continuationContext);
 				return createShortcutSession(createViewerSession(viewer, {
+					SessionClass: ContinuationViewerSession,
+					continuation,
+					continuationContext,
 					controlPanelHostId: CONTROL_PANEL_HOST_ID,
 					createControlPanel
 				}), { isViewerVisible: () => isElementVisible(viewer) });

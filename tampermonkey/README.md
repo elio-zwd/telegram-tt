@@ -232,7 +232,7 @@ tampermonkey/telegram-media-continuity-web-k.user.js
 https://web.telegram.org/k/*
 ```
 
-当前版本：`0.4.0-k10`。
+当前版本：`0.4.0-k11`。
 
 ## 开发真源
 
@@ -262,8 +262,10 @@ version.js  版本单一来源
 - 普通视频只在有效 `ended` 后自动切换；
 - 循环媒体按 `HTMLVideoElement && loop === true` 识别，首次 `playing` 后复用图片时间倒计时；
 - 正向、反向连续浏览；
+- 同频道媒体自动续流（在 Reach viewer 边界时通过程序化关闭隔离，自动滚动消息列表并加载后打开下一/上一媒体，保持 `continuousEnabled` 开启）；
 - “图片和视频”“仅图片”“仅视频”自动筛选；
 - 筛选最多跳过 50 项、总计最多 15 秒，使用独立 sequence ID；
+- 循环媒体自动切换（忽略自然 HOVER 阻断，保留点击/滚轮等交互暂停和慢缓冲保护）；
 - Space 暂停／继续，A 开启／关闭连续浏览；
 - 输入框、文本域、下拉框、可编辑区域和输入法组合期间不触发快捷键；
 - 页面失焦、全屏、标准 PiP、离线、缓冲、缩放、悬停和媒体交互期间暂停自动切换；
@@ -387,6 +389,16 @@ node --check tampermonkey/telegram-media-continuity-web-k.user.js
 ```
 
 两次生成文件 SHA-256 必须一致。构建保持单个未压缩 IIFE、无动态 import、额外 chunk 或 sourcemap、metadata 只匹配 Web K、`@grant none`、版本来自 `version.js`。
+
+## 自动续流边界与安全局限
+
+同频道自动续流设计目标是提升同频道长媒体流的连续浏览体验，**不承诺真正无限运行**。自动续流包含以下安全限额与限制：
+
+- 单次续流尝试总超时：20 秒；
+- 单轮最大消息列表滚动尝试：8 次；
+- 媒体筛选最多连续跳过：50 项；
+- 媒体筛选总时限：约 15 秒；
+- 到达频道顶/底边界或未能找到更多媒体时，脚本进入手动可恢复的暂停状态，保持 `continuousEnabled = true`，不把连续浏览永久关闭。
 
 ## 调试 API 与隐私
 

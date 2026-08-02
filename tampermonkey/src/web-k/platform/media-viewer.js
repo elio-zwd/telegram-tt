@@ -1,11 +1,37 @@
 import { isElementVisible } from './dom.js';
 
+const CLOSE_BUTTON_SELECTORS = Object.freeze([
+  '.media-viewer-close',
+  '.media-viewer-head .MediaViewerActions .icon-close',
+  '.media-viewer-head button .icon-close',
+  '.media-viewer-topbar button .icon-close',
+]);
 const mediaNodeIds = new WeakMap();
 let nextMediaNodeId = 1;
 
 export function findMediaViewer() {
   const viewer = document.querySelector('.media-viewer-whole');
   return isElementVisible(viewer) ? viewer : undefined;
+}
+
+export function dispatchCloseMediaViewer(viewer) {
+  if (!(viewer instanceof Element) || !viewer.isConnected) return false;
+
+  for (const selector of CLOSE_BUTTON_SELECTORS) {
+    const candidate = viewer.querySelector(selector);
+    const button = candidate?.matches('button') ? candidate : candidate?.closest('button');
+    if (!(button instanceof HTMLElement) || !isElementVisible(button)) continue;
+    button.click();
+    return true;
+  }
+
+  window.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'Escape',
+    code: 'Escape',
+    bubbles: true,
+    cancelable: true,
+  }));
+  return true;
 }
 
 export function findMediaRoot(viewer) {
