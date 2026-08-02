@@ -171,3 +171,12 @@ version.js
 - `tampermonkey/telegram-media-continuity-web-k.user.js` 只允许由 `npm run build:tampermonkey:web-k` 生成，不得作为最终修复直接手工编辑。
 - `npm run check:tampermonkey:web-k` 必须验证 metadata、Web K `@match`、版本、单文件 IIFE、动态 import、额外产物和 legacy Blob。
 - 连续构建两次的生成结果必须一致；真实浏览器回归完成前 PR 保持 Draft。
+
+## 15. 自动化浏览器调试与测试工作流
+
+在 AI / Agent 对话中对 Telegram Web K 进行真实页面测试或 UI 调试时，无需手动操作扩展界面，统一参照 [docs/tampermonkey-web-k-browser-testing-guide.md](file:///M:/Windows/Telegram/docs/tampermonkey-web-k-browser-testing-guide.md) 执行自动化载入：
+
+1. **启动静态服务**：后台启动 HTTP 服务监听 `http://localhost:8888/` 托管 compiled userscript。
+2. **CDP 动态载入**：在 `https://web.telegram.org/k/` 页面上下文中创建 `<script>` 标签引入 `http://localhost:8888/tampermonkey/telegram-media-continuity-web-k.user.js`。
+3. **API 与 UI 诊断**：通过 `window.TelegramMediaContinuity.getSummary()` / `inspect()` 诊断，唤起 MediaViewer 自动渲染 `#telegram-media-continuity-host` 控制面板 UI。
+

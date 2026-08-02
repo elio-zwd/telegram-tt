@@ -119,3 +119,8 @@ node --check tampermonkey/telegram-media-continuity-web-k.user.js
 - 生成 userscript 必须提交并与重新构建结果一致。
 - 构建和 CI 不能替代真实 Telegram Web K 浏览器验收。
 - 22 项真实浏览器回归完成前，结构变更 PR 保持 Draft，不得声称产品行为通过。
+
+## 7. 自动化 CDP 调试流
+
+AI/Agent 在对此目录的 Web K userscript 进行自动化测试与 UI 体验调试时，严格遵守 [docs/tampermonkey-web-k-browser-testing-guide.md](file:///M:/Windows/Telegram/docs/tampermonkey-web-k-browser-testing-guide.md)，使用本地 HTTP (`http://localhost:8888/`) 静态服务 + CDP 动态注入，实时读取 `window.TelegramMediaContinuity` 的 API 输出。
+
