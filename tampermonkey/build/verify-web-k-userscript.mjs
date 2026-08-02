@@ -37,6 +37,9 @@ const REQUIRED_MODULE_PATHS = Object.freeze([
   'features/debug/index.js',
   'features/shortcuts/keyboard-shortcuts.js',
   'features/shortcuts/index.js',
+  'features/media-stream-continuation/controller.js',
+  'features/media-stream-continuation/continuation-viewer-session.js',
+  'features/media-stream-continuation/index.js',
 ]);
 const CORE_FORBIDDEN_TOKENS = Object.freeze([
   '.media-viewer-',
@@ -107,6 +110,7 @@ function verifyModuleBoundaries(modules) {
   verifyViewerSession(modules.get('features/continuous-browsing/viewer-session.js'));
   verifyShortcuts(modules);
   verifyComposition(modules);
+  verifyContinuation(modules);
 }
 
 function verifySettings(settings) {
@@ -387,6 +391,43 @@ function verifyComposition(modules) {
   assertCondition(!entry.includes('./features/') && !entry.includes('./platform/') && !entry.includes('./core/'), 'entry.js 不得直接装配具体模块');
 }
 
+function verifyContinuation(modules) {
+  const controller = modules.get('features/media-stream-continuation/controller.js');
+  const session = modules.get('features/media-stream-continuation/continuation-viewer-session.js');
+  const index = modules.get('features/media-stream-continuation/index.js');
+  const lifecycle = modules.get('core/lifecycle.js');
+  const app = modules.get('app.js');
+
+  assertCondition(/CONTINUATION_TIMEOUT_MS\s*=\s*20000\b/.test(controller), 'continuation 总超时必须为 20000ms');
+  assertCondition(/MAX_SCROLL_ATTEMPTS\s*=\s*8\b/.test(controller), '最大滚动尝试必须为 8 次');
+  assertCondition(/FILTER_SEQUENCE_TIMEOUT_MS\s*=\s*15000\b/.test(controller), '筛选总时限必须为 15000ms');
+
+  for (const forbidden of FEATURE_FORBIDDEN_SELECTORS) {
+    assertExcludes(controller, forbidden, `continuation controller 包含平台选择器：${forbidden}`);
+    assertExcludes(session, forbidden, `continuation-viewer-session 包含平台选择器：${forbidden}`);
+    assertExcludes(index, forbidden, `continuation index 包含平台选择器：${forbidden}`);
+  }
+
+  assertIncludes(
+    session,
+    'if (reason === HOVER_PAUSE_REASON && isLoopMedia(this.currentMedia)) return;',
+    '循环媒体必须仅忽略 HOVER 暂停原因',
+  );
+
+  assertIncludes(lifecycle, 'shouldSkipClosePosition', 'lifecycle 缺少程序化关闭隔离检查');
+  assertIncludes(lifecycle, 'handleViewerClosed', 'lifecycle 缺少程序化关闭处理器');
+  assertIncludes(lifecycle, 'locateMessageAfterClose', 'lifecycle 未保留普通用户关闭定位');
+
+  assertIncludes(app, './features/media-stream-continuation/index.js', 'app.js 缺少 media-stream-continuation 功能模块');
+  assertIncludes(app, 'createMediaStreamContinuation()', 'app.js 未创建 continuation 控制器');
+  assertIncludes(app, 'ContinuationViewerSession', 'app.js 未传入 ContinuationViewerSession');
+  assertIncludes(app, 'continuation,', 'app.js 未把 continuation 传递给 lifecycle');
+
+  assertExcludes(session, 'continuousEnabled: false', 'continuation 会话不得把 continuousEnabled 持久化为 false');
+  assertExcludes(controller, 'continuousEnabled: false', 'continuation 控制器不得把 continuousEnabled 持久化为 false');
+  assertExcludes(session, 'saveSettings', 'continuation 会话不得改写设置持久化');
+}
+
 async function verifyGeneratedOutput() {
   const [generated, topLevelEntries, modules, hasLegacyMain] = await Promise.all([
     readFile(OUTPUT_PATH, 'utf8'),
@@ -440,7 +481,14 @@ async function verifyGeneratedOutput() {
     'fullscreenchange',
     'NotAllowedError',
     '媒体加载较慢',
-  ]) assertIncludes(generated, token, `生成文件缺少 V1 标记：${token}`);
+    'createMediaStreamContinuation',
+    'ContinuationViewerSession',
+    'MediaStreamContinuationController',
+    'shouldSkipClosePosition',
+    'handleViewerClosed',
+    'takeSessionContext',
+    'isLoopMedia',
+  ]) assertIncludes(generated, token, `生成文件缺少 V1 或 P1-09 标记：${token}`);
 
   assertCondition(
     /function isValidPhotoDurationMs\(value\) \{\s*return Number\.isInteger\(value\) && value >= (?:1e3|1000) && value <= (?:3e5|300000) && value % 100 === 0;\s*\}/.test(generated),
