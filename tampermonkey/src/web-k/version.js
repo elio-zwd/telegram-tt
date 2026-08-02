@@ -1,1 +1,1 @@
-export const WEB_K_VERSION = '0.4.0-k9';
+export const WEB_K_VERSION = '0.4.0-k10';

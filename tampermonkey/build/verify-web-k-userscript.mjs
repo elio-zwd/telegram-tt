@@ -58,6 +58,14 @@ function assertCondition(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function assertIncludes(content, token, message) {
+  assertCondition(content.includes(token), message);
+}
+
+function assertExcludes(content, token, message) {
+  assertCondition(!content.includes(token), message);
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -83,117 +91,236 @@ function verifyModuleBoundaries(modules) {
   for (const [modulePath, content] of modules) {
     if (modulePath.startsWith('core/')) {
       for (const token of CORE_FORBIDDEN_TOKENS) {
-        assertCondition(!content.includes(token), `核心模块包含 Telegram DOM 标记：${modulePath} -> ${token}`);
+        assertExcludes(content, token, `核心模块包含 Telegram DOM 标记：${modulePath} -> ${token}`);
       }
     }
     if (modulePath.startsWith('features/')) {
       for (const selector of FEATURE_FORBIDDEN_SELECTORS) {
-        assertCondition(!content.includes(selector), `功能模块仍直接包含 Telegram 平台选择器：${modulePath} -> ${selector}`);
+        assertExcludes(content, selector, `功能模块仍直接包含 Telegram 平台选择器：${modulePath} -> ${selector}`);
       }
     }
   }
 
-  const settings = modules.get('core/settings.js');
-  assertCondition(settings.includes("const STORAGE_KEY = 'tt.mediaContinuity.v1';"), '设置模块未保留原 storage key');
-  assertCondition(settings.includes("browseDirection: 'forward'"), '设置模块缺少默认正向浏览方向');
-  assertCondition(
-    settings.includes('BROWSE_DIRECTIONS.includes(source.browseDirection)'),
-    '设置模块未校验正向和反向浏览方向',
-  );
-  assertCondition(settings.includes("mediaFilter: 'all'"), '设置模块缺少默认全部媒体筛选');
-  assertCondition(/PHOTO_DURATION_MIN_MS\s*=\s*1000\b/.test(settings), '自定义图片时间最小值必须为 1 秒');
-  assertCondition(/PHOTO_DURATION_MAX_MS\s*=\s*300000\b/.test(settings), '自定义图片时间最大值必须为 300 秒');
-  assertCondition(/PHOTO_DURATION_STEP_MS\s*=\s*100\b/.test(settings), '自定义图片时间必须使用 100ms 精度');
-  assertCondition(settings.includes('PHOTO_DURATION_INPUT_PATTERN = /^(\\d+)(?:\\.(\\d))?$/;'), '自定义图片时间必须只接受普通十进制和一位小数');
-  assertCondition(settings.includes('Number.isInteger(value)'), '图片时间毫秒值必须为整数');
-  assertCondition(settings.includes('value % PHOTO_DURATION_STEP_MS === 0'), '图片时间毫秒值必须限制为一位小数精度');
-  assertCondition(settings.includes('isValidPhotoDurationMs(source.photoDurationMs)'), '设置加载必须接受合法自定义图片时间');
-  assertCondition(!settings.includes('DURATIONS.includes(source.photoDurationMs)'), '设置加载不得把自定义时间回退到预设值');
-  assertCondition(
-    settings.includes('MEDIA_FILTERS.includes(source.mediaFilter)'),
-    '设置模块未校验媒体类型筛选值',
-  );
+  verifySettings(modules.get('core/settings.js'));
+  verifyPlatform(modules);
+  verifyControlPanel(modules.get('features/control-panel/control-panel.js'));
+  verifyViewerSession(modules.get('features/continuous-browsing/viewer-session.js'));
+  verifyShortcuts(modules);
+  verifyComposition(modules);
+}
 
+function verifySettings(settings) {
+  assertIncludes(settings, "const STORAGE_KEY = 'tt.mediaContinuity.v1';", '设置模块未保留唯一 storage key');
+  assertCondition((settings.match(/tt\.mediaContinuity\.v1/g) || []).length === 1, '设置模块出现第二套 storage key');
+  assertIncludes(settings, "browseDirection: 'forward'", '设置模块缺少默认正向浏览方向');
+  assertIncludes(settings, 'BROWSE_DIRECTIONS.includes(source.browseDirection)', '设置模块未校验浏览方向');
+  assertIncludes(settings, "mediaFilter: 'all'", '设置模块缺少默认全部媒体筛选');
+  assertIncludes(settings, 'MEDIA_FILTERS.includes(source.mediaFilter)', '设置模块未校验媒体筛选值');
+  assertCondition(/PHOTO_DURATION_MIN_MS\s*=\s*1000\b/.test(settings), '自定义时间最小值必须为 1 秒');
+  assertCondition(/PHOTO_DURATION_MAX_MS\s*=\s*300000\b/.test(settings), '自定义时间最大值必须为 300 秒');
+  assertCondition(/PHOTO_DURATION_STEP_MS\s*=\s*100\b/.test(settings), '自定义时间必须使用 100ms 精度');
+  assertIncludes(settings, 'PHOTO_DURATION_INPUT_PATTERN = /^(\\d+)(?:\\.(\\d))?$/;', '自定义时间必须只接受普通十进制和一位小数');
+  assertIncludes(settings, 'Number.isInteger(value)', '图片时间毫秒值必须为整数');
+  assertIncludes(settings, 'value % PHOTO_DURATION_STEP_MS === 0', '图片时间必须限制为一位小数精度');
+  assertIncludes(settings, 'isValidPhotoDurationMs(source.photoDurationMs)', '设置加载必须接受合法自定义时间');
+  assertExcludes(settings, 'DURATIONS.includes(source.photoDurationMs)', '自定义时间不得回退到预设值');
+
+  assertIncludes(settings, 'VIDEO_PLAYBACK_RATES = Object.freeze([0.5, 1, 1.25, 1.5, 2])', '视频倍速白名单不完整');
+  assertIncludes(settings, 'videoMuted: false', '缺少默认视频静音设置');
+  assertIncludes(settings, 'videoVolume: 1', '缺少默认视频音量设置');
+  assertIncludes(settings, 'videoPlaybackRate: 1', '缺少默认视频倍速设置');
+  assertIncludes(settings, 'Number.isFinite(value) && value >= 0 && value <= 1', '视频音量未限制在 0～1');
+  assertIncludes(settings, 'Math.round(value * 100) / 100', '视频音量未规范为两位小数');
+  assertIncludes(settings, 'VIDEO_PLAYBACK_RATES.includes(value)', '视频倍速未使用有限白名单');
+  assertIncludes(settings, 'typeof source.videoMuted === \'boolean\'', '设置加载未校验静音值');
+  assertIncludes(settings, 'isValidVideoVolume(source.videoVolume)', '设置加载未校验音量值');
+  assertIncludes(settings, 'isValidVideoPlaybackRate(source.videoPlaybackRate)', '设置加载未校验倍速值');
+  assertIncludes(settings, 'nextState.settings = validatedSettings', '设置保存未保留统一 settings 对象');
+}
+
+function verifyPlatform(modules) {
   const mediaViewer = modules.get('platform/media-viewer.js');
-  assertCondition(mediaViewer.includes("document.querySelector('.media-viewer-whole')"), '媒体查看器选择器未集中到平台层');
-  assertCondition(mediaViewer.includes("viewer.querySelector('.media-viewer-movers')"), '媒体 root 选择器未集中到平台层');
-  assertCondition(mediaViewer.includes('export function getMediaType(media)'), '媒体平台层缺少公开媒体类型接口');
-  assertCondition(mediaViewer.includes("return 'images';"), '媒体平台层未把 img 归类为图片');
-  assertCondition(mediaViewer.includes("return 'videos';"), '媒体平台层未把 video 归类为视频');
+  assertIncludes(mediaViewer, "document.querySelector('.media-viewer-whole')", '媒体查看器选择器未集中到平台层');
+  assertIncludes(mediaViewer, "viewer.querySelector('.media-viewer-movers')", '媒体 root 选择器未集中到平台层');
+  assertIncludes(mediaViewer, 'export function getMediaType(media)', '平台层缺少媒体类型接口');
+  assertIncludes(mediaViewer, "return 'images';", '平台层未把 img 归类为图片');
+  assertIncludes(mediaViewer, "return 'videos';", '平台层未把 video 归类为视频');
+  assertIncludes(mediaViewer, 'export function isLoopMedia(media)', '平台层缺少循环媒体接口');
+  assertIncludes(
+    mediaViewer,
+    'return media instanceof HTMLVideoElement && media.loop === true;',
+    '循环媒体必须只使用公开 video.loop 条件',
+  );
+  for (const forbidden of ['extension', 'fileName', 'webpack', 'indexedDB']) {
+    assertExcludes(mediaViewer, forbidden, `循环媒体平台层不得依赖 ${forbidden}`);
+  }
 
   const navigation = modules.get('platform/navigation.js');
-  assertCondition(navigation.includes("'.media-viewer-switcher-left'"), '上一项选择器未集中到导航平台层');
-  assertCondition(navigation.includes("'.media-viewer-switcher-right'"), '下一项选择器未集中到导航平台层');
+  assertIncludes(navigation, "'.media-viewer-switcher-left'", '上一项选择器未集中到导航平台层');
+  assertIncludes(navigation, "'.media-viewer-switcher-right'", '下一项选择器未集中到导航平台层');
 
   const messageList = modules.get('platform/message-list.js');
-  assertCondition(messageList.includes("'.scrollable.scrollable-y.bubbles-scrollable'"), '聊天滚动容器选择器未集中到消息列表平台层');
-  assertCondition(messageList.includes("'[data-mid][data-peer-id]'"), '消息身份选择器未集中到消息列表平台层');
+  assertIncludes(messageList, "'.scrollable.scrollable-y.bubbles-scrollable'", '聊天滚动容器选择器未集中到消息列表平台层');
+  assertIncludes(messageList, "'[data-mid][data-peer-id]'", '消息身份选择器未集中到消息列表平台层');
+}
 
-  const controlPanel = modules.get('features/control-panel/control-panel.js');
-  assertCondition(!controlPanel.includes('../../platform/'), '控制面板不得依赖 platform 模块');
-  assertCondition(!controlPanel.includes('document.querySelector('), '控制面板不得查询 Telegram 页面 DOM');
-  assertCondition(controlPanel.includes('id="direction"'), '控制面板缺少自动浏览方向选择框');
-  assertCondition(controlPanel.includes('onSetBrowseDirection'), '控制面板缺少方向回调');
-  assertCondition(controlPanel.includes('id="filter"'), '控制面板缺少媒体类型筛选框');
-  assertCondition(controlPanel.includes('onSetMediaFilter'), '控制面板缺少媒体筛选回调');
-  assertCondition(controlPanel.includes('value="${CUSTOM_DURATION_VALUE}"'), '控制面板缺少自定义图片时间选项');
-  assertCondition(controlPanel.includes('id="custom-duration-input"'), '控制面板缺少自定义时间输入框');
-  assertCondition(controlPanel.includes('aria-label="自定义图片停留秒数"'), '自定义时间输入框缺少可访问性标识');
-  assertCondition(controlPanel.includes('id="apply-duration"'), '控制面板缺少自定义时间应用按钮');
-  assertCondition(controlPanel.includes("event.key !== 'Enter'"), '自定义图片时间缺少 Enter 提交');
-  assertCondition(controlPanel.includes('parsePhotoDurationSeconds(this.customDurationInput.value)'), '自定义时间提交必须通过统一解析函数');
-  assertCondition(controlPanel.includes('durationMs === undefined'), '非法自定义时间必须被拒绝');
-  assertCondition(controlPanel.includes('onNavigate(-1, false)'), '控制面板上一项必须保持 -1');
-  assertCondition(controlPanel.includes('onNavigate(1, false)'), '控制面板下一项必须保持 1');
+function verifyControlPanel(controlPanel) {
+  assertExcludes(controlPanel, '../../platform/', '控制面板不得依赖 platform 模块');
+  assertExcludes(controlPanel, 'document.querySelector(', '控制面板不得查询 Telegram 页面 DOM');
+  for (const [token, message] of [
+    ['id="toggle"', '缺少连续浏览开关'],
+    ['id="pause"', '缺少暂停按钮'],
+    ['id="previous"', '缺少上一项按钮'],
+    ['id="next"', '缺少下一项按钮'],
+    ['id="direction"', '缺少浏览方向选择框'],
+    ['id="filter"', '缺少媒体筛选框'],
+    ['id="duration"', '缺少停留时间选择框'],
+    ['id="custom-duration-input"', '缺少自定义时间输入框'],
+    ['id="apply-duration"', '缺少自定义时间应用按钮'],
+    ['id="video-muted"', '缺少视频静音按钮'],
+    ['id="video-volume"', '缺少视频音量控件'],
+    ['id="video-rate"', '缺少视频倍速控件'],
+    ['id="status"', '缺少状态提示'],
+    ['id="collapse"', '缺少收起按钮'],
+    ['id="launcher"', '缺少展开按钮'],
+  ]) assertIncludes(controlPanel, token, message);
 
-  const viewerSession = modules.get('features/continuous-browsing/viewer-session.js');
-  assertCondition(viewerSession.includes("from '../../platform/navigation.js'"), '连续浏览模块必须通过 platform/navigation.js 导航');
-  assertCondition(viewerSession.includes('getAutomaticDirection()'), '连续浏览模块缺少统一自动方向方法');
-  assertCondition(
-    viewerSession.includes("return this.settings.browseDirection === 'backward' ? -1 : 1;"),
-    '自动方向方法未保持 forward=1、backward=-1',
-  );
+  for (const callback of [
+    'onSetBrowseDirection',
+    'onSetMediaFilter',
+    'onSetPhotoDuration',
+    'onSetVideoMuted',
+    'onSetVideoVolume',
+    'onSetVideoPlaybackRate',
+  ]) assertIncludes(controlPanel, callback, `控制面板缺少回调：${callback}`);
+
+  assertIncludes(controlPanel, 'aria-label="自定义图片停留秒数"', '自定义时间输入框缺少可访问性标识');
+  assertIncludes(controlPanel, 'aria-label="视频音量"', '音量控件缺少可访问性标识');
+  assertIncludes(controlPanel, 'aria-label="视频播放倍速"', '倍速控件缺少可访问性标识');
+  assertIncludes(controlPanel, "event.key !== 'Enter'", '自定义时间缺少 Enter 提交');
+  assertIncludes(controlPanel, 'parsePhotoDurationSeconds(this.customDurationInput.value)', '自定义时间未使用统一解析函数');
+  assertIncludes(controlPanel, 'durationMs === undefined', '非法自定义时间未被拒绝');
+  assertIncludes(controlPanel, 'onNavigate(-1, false)', '上一项必须保持物理方向 -1');
+  assertIncludes(controlPanel, 'onNavigate(1, false)', '下一项必须保持物理方向 1');
+  assertIncludes(controlPanel, '@media (max-width: 560px)', '控制条缺少窄窗口换行规则');
+  assertExcludes(controlPanel, '自动保存', '控制条不得新增自动保存入口');
+  assertExcludes(controlPanel, '下载', '控制条不得新增下载入口');
+}
+
+function verifyViewerSession(viewerSession) {
+  assertIncludes(viewerSession, "from '../../platform/navigation.js'", '连续浏览必须通过平台导航模块');
+  assertIncludes(viewerSession, "return this.settings.browseDirection === 'backward' ? -1 : 1;", '自动方向映射错误');
   assertCondition(
     (viewerSession.match(/this\.navigate\((?:this\.getAutomaticDirection\(\)|automaticDirection), true\)/g) || []).length >= 2,
-    '图片和视频自动切换未统一使用自动方向',
+    '图片、循环媒体和普通视频未统一使用自动方向',
   );
-  assertCondition(viewerSession.includes("if (event.key === 'ArrowRight')"), 'ArrowRight 必须继续保持方向 1');
-  assertCondition(viewerSession.includes('this.prepareNavigationTarget(1);'), 'ArrowRight 必须使用方向 1 准备关闭定位目标');
-  assertCondition(viewerSession.includes("else if (event.key === 'ArrowLeft')"), 'ArrowLeft 必须继续保持方向 -1');
-  assertCondition(viewerSession.includes('this.prepareNavigationTarget(-1);'), 'ArrowLeft 必须使用方向 -1 准备关闭定位目标');
-  assertCondition(viewerSession.includes('this.prepareNavigationTarget(direction);'), '导航前必须使用实际方向准备关闭定位目标');
-  assertCondition(viewerSession.includes('const FILTER_SEQUENCE_MAX_SKIPS = 50;'), '媒体筛选缺少明确最大跳过次数');
-  assertCondition(viewerSession.includes('const FILTER_SEQUENCE_TIMEOUT_MS = 15000;'), '媒体筛选缺少明确总超时');
-  assertCondition(viewerSession.includes('filterSequenceId'), '媒体筛选缺少序列隔离');
-  assertCondition(viewerSession.includes('blockCurrentTargetConfirmation'), '跳过序列未隔离关闭定位确认');
-  assertCondition(viewerSession.includes('takeOverFilterSequence()'), '手动操作未提供筛选序列接管入口');
-  assertCondition(viewerSession.includes("this.settings.mediaFilter === 'all'"), '全部媒体模式未保持直接自动导航');
-  assertCondition(
-    viewerSession.includes('togglePause()') && viewerSession.includes('this.takeOverFilterSequence();'),
-    '暂停入口必须继续取消媒体筛选序列',
-  );
-  assertCondition(
-    viewerSession.includes('toggleContinuous()') && viewerSession.includes('continuousEnabled: this.active'),
-    '连续浏览开关必须继续使用原设置持久化路径',
-  );
-  const setPhotoDurationMethod = viewerSession.match(/setPhotoDuration\(duration\) \{([\s\S]*?)\n  \}/)?.[1] || '';
-  assertCondition(setPhotoDurationMethod.includes('if (!isValidPhotoDurationMs(duration)) return false;'), '会话必须拒绝非法图片时间');
-  assertCondition(setPhotoDurationMethod.includes('photoDurationMs: duration'), '合法图片时间必须使用现有设置持久化路径');
-  assertCondition(setPhotoDurationMethod.includes('this.currentMedia instanceof HTMLImageElement'), '只有当前图片需要重新开始完整倒计时');
-  assertCondition(!setPhotoDurationMethod.includes('takeOverFilterSequence'), '修改图片时间不得接管媒体筛选序列');
-  assertCondition(viewerSession.includes('isEditableEventTarget(event)'), '方向键监听必须避开自定义输入框');
+  assertIncludes(viewerSession, "if (event.key === 'ArrowRight')", 'ArrowRight 跟踪缺失');
+  assertIncludes(viewerSession, 'this.prepareNavigationTarget(1);', 'ArrowRight 必须准备方向 1');
+  assertIncludes(viewerSession, "else if (event.key === 'ArrowLeft')", 'ArrowLeft 跟踪缺失');
+  assertIncludes(viewerSession, 'this.prepareNavigationTarget(-1);', 'ArrowLeft 必须准备方向 -1');
+  assertIncludes(viewerSession, 'this.prepareNavigationTarget(direction);', '导航前未准备关闭定位目标');
 
-  const keyboardShortcuts = modules.get('features/shortcuts/keyboard-shortcuts.js');
-  assertCondition(!keyboardShortcuts.includes('../../platform/'), '快捷键模块不得依赖 platform 模块');
-  assertCondition(!keyboardShortcuts.includes('document.querySelector('), '快捷键模块不得查询 Telegram 页面 DOM');
-  for (const editableToken of ['input', 'textarea', 'select', '[contenteditable]', '[role="textbox"]']) {
-    assertCondition(keyboardShortcuts.includes(editableToken), `快捷键模块缺少输入保护：${editableToken}`);
+  assertIncludes(viewerSession, 'const FILTER_SEQUENCE_MAX_SKIPS = 50;', '媒体筛选缺少最大跳过次数');
+  assertIncludes(viewerSession, 'const FILTER_SEQUENCE_TIMEOUT_MS = 15000;', '媒体筛选缺少总超时');
+  assertIncludes(viewerSession, 'filterSequenceId', '媒体筛选缺少序列隔离');
+  assertIncludes(viewerSession, 'blockCurrentTargetConfirmation', '筛选和失败未隔离关闭定位确认');
+  assertIncludes(viewerSession, 'takeOverFilterSequence()', '手动操作缺少筛选接管入口');
+  assertIncludes(viewerSession, "this.settings.mediaFilter === 'all'", '全部媒体模式未保持直接导航');
+
+  const setPhotoDurationMethod = viewerSession.match(/setPhotoDuration\(duration\) \{([\s\S]*?)\n  \}/)?.[1] || '';
+  assertIncludes(setPhotoDurationMethod, 'if (!isValidPhotoDurationMs(duration)) return false;', '会话未拒绝非法停留时间');
+  assertIncludes(setPhotoDurationMethod, 'photoDurationMs: duration', '合法停留时间未使用统一设置保存');
+  assertIncludes(setPhotoDurationMethod, 'this.currentMedia instanceof HTMLImageElement || isLoopMedia(this.currentMedia)', '图片和循环媒体修改时长后未重启');
+  assertExcludes(setPhotoDurationMethod, 'takeOverFilterSequence', '修改停留时间不得接管筛选序列');
+
+  assertIncludes(viewerSession, 'const PAUSE_REASONS = Object.freeze({', '会话缺少独立暂停原因集合');
+  for (const reason of [
+    "USER: 'user'",
+    "PAGE: 'page'",
+    "FULLSCREEN: 'fullscreen'",
+    "PICTURE_IN_PICTURE: 'picture-in-picture'",
+    "OFFLINE: 'offline'",
+    "BUFFERING: 'buffering'",
+    "USER_ACTION_REQUIRED: 'user-action-required'",
+    "FAILURE: 'failure'",
+    "NODE_INVALID: 'node-invalid'",
+    "MEDIA_CONFLICT: 'media-conflict'",
+    "FILTER: 'filter'",
+  ]) assertIncludes(viewerSession, reason, `缺少暂停原因：${reason}`);
+  assertIncludes(viewerSession, 'this.pauseReasons = new Set();', '暂停原因必须使用独立集合');
+  assertIncludes(viewerSession, 'this.pauseReasons.delete(reason)', '暂停恢复必须只清除对应原因');
+  const mediaScopedPauseReasons = viewerSession.match(/const MEDIA_SCOPED_PAUSE_REASONS = Object\.freeze\(\[([\s\S]*?)\]\);/)?.[1] || '';
+  assertExcludes(mediaScopedPauseReasons, 'PAUSE_REASONS.FILTER', '筛选暂停不得因媒体节点替换自动解除');
+  assertIncludes(viewerSession, 'if (!this.hasPauseReason(PAUSE_REASONS.FILTER))', '筛选暂停期间必须继续屏蔽关闭定位确认');
+
+  assertIncludes(viewerSession, "document.addEventListener('fullscreenchange'", '缺少标准 fullscreenchange');
+  assertIncludes(viewerSession, 'document.fullscreenElement', '缺少标准 fullscreenElement 判断');
+  assertIncludes(viewerSession, "document.addEventListener('enterpictureinpicture'", '缺少标准 enterpictureinpicture');
+  assertIncludes(viewerSession, "document.addEventListener('leavepictureinpicture'", '缺少标准 leavepictureinpicture');
+  assertIncludes(viewerSession, 'document.pictureInPictureElement', '缺少标准 pictureInPictureElement 判断');
+  assertExcludes(viewerSession, 'disablePictureInPicture = false', '不得移除 Telegram PiP 限制');
+  assertIncludes(viewerSession, "window.addEventListener('offline'", '缺少 offline 监听');
+  assertIncludes(viewerSession, "window.addEventListener('online'", '缺少 online 监听');
+  assertIncludes(viewerSession, 'navigator.onLine === false', '网络恢复不得把 onLine 当作媒体可用证明');
+  assertIncludes(viewerSession, "eventType !== 'canplay' && eventType !== 'playing'", '视频在线恢复必须等待 canplay 或 playing');
+
+  assertIncludes(viewerSession, 'const BUFFERING_WARNING_MS = 15000;', '缓冲慢提示阈值必须约 15 秒');
+  assertIncludes(viewerSession, "add(media, 'waiting'", '缺少 waiting 监听');
+  assertIncludes(viewerSession, "add(media, 'stalled'", '缺少 stalled 监听');
+  assertIncludes(viewerSession, '媒体加载较慢，连续浏览已暂停', '缺少缓冲慢提示');
+  assertIncludes(viewerSession, 'this.bufferingRecovered = true;', '缓冲恢复必须记录可继续证据');
+  assertIncludes(viewerSession, 'this.isBufferingSlow && this.hasPauseReason(PAUSE_REASONS.BUFFERING)', '慢缓冲必须进入可手动继续的暂停状态');
+  assertIncludes(viewerSession, '当前媒体仍在缓冲，请稍后重试', '慢缓冲未恢复时不得错误继续');
+  assertIncludes(viewerSession, "error.name === 'NotAllowedError'", '自动播放限制未区分 NotAllowedError');
+  assertIncludes(viewerSession, '点击视频开始播放', '自动播放限制缺少用户操作提示');
+  assertIncludes(viewerSession, 'media.error.code', '视频失败必须检查 error.code');
+  assertIncludes(viewerSession, 'this.addPauseReason(PAUSE_REASONS.FAILURE', '确认失败必须暂停');
+  assertIncludes(viewerSession, 'if (!automatic)', '失败与系统暂停不得阻止手动导航');
+
+  assertIncludes(viewerSession, 'isLoopMedia(this.currentMedia)', '循环媒体未接入调度');
+  assertIncludes(viewerSession, 'this.currentVideoHasPlayed', '循环媒体缺少首次 playing 证据');
+  assertIncludes(viewerSession, "this.startTimedMediaCountdown('循环媒体'", '循环媒体未复用停留时间');
+  assertIncludes(viewerSession, 'media.loop !== this.currentLoopState', '循环证据变化未暂停');
+  assertIncludes(viewerSession, 'mediaSequenceId === this.mediaSequenceId', '旧媒体事件缺少序列隔离');
+  assertIncludes(viewerSession, 'this.currentMedia === media', '旧媒体事件缺少节点身份隔离');
+  assertIncludes(viewerSession, 'media.isConnected', '旧媒体事件缺少连接状态检查');
+  assertIncludes(viewerSession, 'this.viewer.contains(media)', '媒体必须仍属于当前查看器');
+  assertIncludes(viewerSession, 'if (!this.isCurrentMedia(media, mediaSequenceId) || this.hasAutomationPause()) return;', '旧 timer 或暂停状态不得自动导航');
+
+  for (const preference of ['videoMuted', 'videoVolume', 'videoPlaybackRate']) {
+    assertIncludes(viewerSession, preference, `会话缺少视频偏好：${preference}`);
   }
-  assertCondition(
-    keyboardShortcuts.includes('[contenteditable]:not([contenteditable="false"])'),
-    '快捷键模块必须排除 contenteditable=false',
-  );
-  for (const guardToken of [
+  assertIncludes(viewerSession, "add(media, 'volumechange'", '缺少 volumechange 同步');
+  assertIncludes(viewerSession, "add(media, 'ratechange'", '缺少 ratechange 同步');
+  assertIncludes(viewerSession, 'if (!(media instanceof HTMLVideoElement) || isLoopMedia(media)) return;', '循环媒体不得套用普通视频偏好');
+  assertIncludes(viewerSession, 'if (!Object.keys(patch).length) return;', '视频偏好同步缺少反馈循环保护');
+
+  for (const cleanup of [
+    "document.removeEventListener('fullscreenchange'",
+    "document.removeEventListener('enterpictureinpicture'",
+    "document.removeEventListener('leavepictureinpicture'",
+    "window.removeEventListener('online'",
+    "window.removeEventListener('offline'",
+    'this.bufferingTimer = clearTimeoutId(this.bufferingTimer)',
+    'this.releaseMediaListeners()',
+    'disconnectObserver(this.observer)',
+  ]) assertIncludes(viewerSession, cleanup, `会话销毁缺少清理：${cleanup}`);
+
+  assertIncludes(viewerSession, 'isEditableEventTarget(event)', '方向键监听必须避开输入控件');
+  for (const forbidden of ['webpack', 'indexedDB', 'TelegramApi', 'Bot API']) {
+    assertExcludes(viewerSession, forbidden, `连续浏览不得依赖 ${forbidden}`);
+  }
+}
+
+function verifyShortcuts(modules) {
+  const keyboardShortcuts = modules.get('features/shortcuts/keyboard-shortcuts.js');
+  assertExcludes(keyboardShortcuts, '../../platform/', '快捷键模块不得依赖 platform');
+  assertExcludes(keyboardShortcuts, 'document.querySelector(', '快捷键模块不得查询 Telegram DOM');
+  for (const token of ['input', 'textarea', 'select', '[contenteditable]', '[role="textbox"]']) {
+    assertIncludes(keyboardShortcuts, token, `快捷键缺少输入保护：${token}`);
+  }
+  assertIncludes(keyboardShortcuts, '[contenteditable]:not([contenteditable="false"])', '快捷键必须排除 contenteditable=false');
+  for (const guard of [
     'event.defaultPrevented',
     'event.repeat',
     'event.isComposing',
@@ -202,47 +329,33 @@ function verifyModuleBoundaries(modules) {
     'event.metaKey',
     '!viewer.isConnected',
     '!isViewerVisible()',
-  ]) {
-    assertCondition(keyboardShortcuts.includes(guardToken), `快捷键模块缺少触发保护：${guardToken}`);
-  }
-  assertCondition(keyboardShortcuts.includes("event.code === 'Space'"), '快捷键模块缺少 Space');
-  assertCondition(keyboardShortcuts.includes("event.code === 'KeyA'"), '快捷键模块缺少 A');
-  const forbiddenKeyComparisons = Object.freeze([
+  ]) assertIncludes(keyboardShortcuts, guard, `快捷键缺少保护：${guard}`);
+  assertIncludes(keyboardShortcuts, "event.code === 'Space'", '快捷键缺少 Space');
+  assertIncludes(keyboardShortcuts, "event.code === 'KeyA'", '快捷键缺少 A');
+  for (const comparison of [
     "event.code === 'ArrowLeft'",
     "event.code === 'ArrowRight'",
     "event.code === 'Escape'",
     "event.key === 'Escape'",
     "event.code === 'KeyD'",
-  ]);
-  for (const comparison of forbiddenKeyComparisons) {
-    assertCondition(!keyboardShortcuts.includes(comparison), `快捷键模块不得包含按键比较：${comparison}`);
-  }
-  assertCondition(
-    (keyboardShortcuts.match(/event\.preventDefault\(\);/g) || []).length === 1,
-    '快捷键模块只能在统一命中入口阻止默认行为',
-  );
-  assertCondition(
-    (keyboardShortcuts.match(/event\.stopPropagation\(\);/g) || []).length === 1,
-    '快捷键模块只能在统一命中入口停止传播',
-  );
-  assertCondition(
-    keyboardShortcuts.includes("window.removeEventListener('keydown', handleKeyDown, true);"),
-    '快捷键销毁时必须移除 keydown listener',
-  );
+  ]) assertExcludes(keyboardShortcuts, comparison, `快捷键不得处理：${comparison}`);
+  assertCondition((keyboardShortcuts.match(/event\.preventDefault\(\);/g) || []).length === 1, '快捷键只能统一阻止一次默认行为');
+  assertCondition((keyboardShortcuts.match(/event\.stopPropagation\(\);/g) || []).length === 1, '快捷键只能统一停止一次传播');
+  assertIncludes(keyboardShortcuts, "window.removeEventListener('keydown', handleKeyDown, true);", '快捷键销毁缺少 listener 清理');
 
   const shortcuts = modules.get('features/shortcuts/index.js');
-  assertCondition(shortcuts.includes('session.togglePause()'), '快捷键会话必须调用 ViewerSession.togglePause()');
-  assertCondition(shortcuts.includes('session.toggleContinuous()'), '快捷键会话必须调用 ViewerSession.toggleContinuous()');
-  assertCondition(shortcuts.includes('requestRefresh: () => session.requestRefresh()'), '快捷键会话未转发 requestRefresh()');
-  assertCondition(shortcuts.includes('createCloseSnapshot: () => session.createCloseSnapshot()'), '快捷键会话未转发 createCloseSnapshot()');
-  assertCondition(
-    shortcuts.includes('getLastConfirmedMediaTarget: () => session.getLastConfirmedMediaTarget()'),
-    '快捷键会话未转发 getLastConfirmedMediaTarget()',
-  );
-  assertCondition(shortcuts.includes('shortcuts.destroy();') && shortcuts.includes('session.destroy();'), '快捷键会话销毁顺序不完整');
+  assertIncludes(shortcuts, 'session.togglePause()', '快捷键会话未调用 togglePause');
+  assertIncludes(shortcuts, 'session.toggleContinuous()', '快捷键会话未调用 toggleContinuous');
+  assertIncludes(shortcuts, 'requestRefresh: () => session.requestRefresh()', '快捷键会话未转发 requestRefresh');
+  assertIncludes(shortcuts, 'createCloseSnapshot: () => session.createCloseSnapshot()', '快捷键会话未转发关闭快照');
+  assertIncludes(shortcuts, 'getLastConfirmedMediaTarget: () => session.getLastConfirmedMediaTarget()', '快捷键会话未转发最后目标');
+  assertIncludes(shortcuts, 'shortcuts.destroy();', '快捷键会话销毁不完整');
+  assertIncludes(shortcuts, 'session.destroy();', 'ViewerSession 销毁不完整');
+}
 
+function verifyComposition(modules) {
   const debugApi = modules.get('features/debug/debug-api.js');
-  const publicApiNames = [
+  for (const apiName of [
     'inspect',
     'inspectMessageMapping',
     'armCloseFlowProbe',
@@ -254,11 +367,8 @@ function verifyModuleBoundaries(modules) {
     'testNext',
     'rescan',
     'getSummary',
-  ];
-  for (const apiName of publicApiNames) {
-    assertCondition(new RegExp(`\\b${apiName}\\b`).test(debugApi), `调试 API 缺少公开方法：${apiName}`);
-  }
-  assertCondition(debugApi.includes('version: WEB_K_VERSION'), '调试摘要版本未使用 version.js');
+  ]) assertCondition(new RegExp(`\\b${apiName}\\b`).test(debugApi), `调试 API 缺少：${apiName}`);
+  assertIncludes(debugApi, 'version: WEB_K_VERSION', '调试摘要版本未使用 version.js');
 
   const app = modules.get('app.js');
   for (const featurePath of [
@@ -267,15 +377,13 @@ function verifyModuleBoundaries(modules) {
     './features/control-panel/index.js',
     './features/debug/index.js',
     './features/shortcuts/index.js',
-  ]) {
-    assertCondition(app.includes(featurePath), `应用装配层缺少功能模块依赖：${featurePath}`);
-  }
-  assertCondition(app.includes("from './core/lifecycle.js'"), '应用装配层未装配 lifecycle');
-  assertCondition(app.includes('createShortcutSession(viewerSession'), '应用装配层未组合快捷键会话');
+  ]) assertIncludes(app, featurePath, `app.js 缺少功能模块：${featurePath}`);
+  assertIncludes(app, "from './core/lifecycle.js'", 'app.js 未装配 lifecycle');
+  assertIncludes(app, 'createShortcutSession(viewerSession', 'app.js 未组合快捷键会话');
 
   const entry = modules.get('entry.js');
-  assertCondition(entry.includes("from './app.js'"), 'entry.js 未从 app.js 启动');
-  assertCondition(entry.includes('createApp().start();'), 'entry.js 未直接启动 createApp()');
+  assertIncludes(entry, "from './app.js'", 'entry.js 未从 app.js 启动');
+  assertIncludes(entry, 'createApp().start();', 'entry.js 未直接启动应用');
   assertCondition(!entry.includes('./features/') && !entry.includes('./platform/') && !entry.includes('./core/'), 'entry.js 不得直接装配具体模块');
 }
 
@@ -287,8 +395,7 @@ async function verifyGeneratedOutput() {
     pathExists(LEGACY_MAIN_PATH),
   ]);
 
-  assertCondition(!hasLegacyMain, 'legacy-main.js 必须在 M3 删除');
-
+  assertCondition(!hasLegacyMain, 'legacy-main.js 必须保持删除');
   const expectedMetadata = createWebKUserscriptMetadata();
   const metadataEndIndex = generated.indexOf('// ==/UserScript==');
   assertCondition(generated.startsWith(expectedMetadata), '生成文件顶部 metadata 不符合单一来源');
@@ -297,48 +404,61 @@ async function verifyGeneratedOutput() {
     generated.slice(metadataEndIndex + '// ==/UserScript=='.length).trimStart().startsWith(GENERATED_NOTICE),
     '生成文件缺少禁止手工修改说明',
   );
-  assertCondition((generated.match(/\/\/ ==UserScript==/g) || []).length === 1, '生成文件包含重复 userscript metadata');
+  assertCondition((generated.match(/\/\/ ==UserScript==/g) || []).length === 1, '生成文件包含重复 metadata');
 
   const metadataBlock = generated.slice(0, metadataEndIndex + '// ==/UserScript=='.length);
   const matchLines = metadataBlock.match(/^\/\/ @match\s+.+$/gm) || [];
   assertCondition(matchLines.length === 1, `metadata @match 数量异常：${matchLines.length}`);
-  assertCondition(matchLines[0] === `// @match        ${WEB_K_MATCH}`, 'metadata 未唯一匹配 Telegram Web K');
-  assertCondition(!metadataBlock.includes('web.telegram.org/a/'), 'metadata 禁止包含 Telegram Web A');
-  assertCondition(metadataBlock.includes('// @grant        none'), 'metadata 必须保持 @grant none');
+  assertCondition(matchLines[0] === `// @match        ${WEB_K_MATCH}`, 'metadata 未唯一匹配 Web K');
+  assertExcludes(metadataBlock, 'web.telegram.org/a/', 'metadata 禁止包含 Web A');
+  assertIncludes(metadataBlock, '// @grant        none', 'metadata 必须保持 @grant none');
 
   const metadataVersion = metadataBlock.match(/^\/\/ @version\s+(.+)$/m)?.[1]?.trim();
-  assertCondition(metadataVersion === WEB_K_VERSION, 'metadata 版本与版本模块不一致');
+  assertCondition(metadataVersion === WEB_K_VERSION, 'metadata 版本与 version.js 不一致');
   const escapedVersion = escapeRegExp(WEB_K_VERSION);
-  assertCondition(
-    new RegExp(`(?:const|let|var)\\s+WEB_K_VERSION\\s*=\\s*['"]${escapedVersion}['"]`).test(generated),
-    '生成文件缺少运行时版本常量',
-  );
+  assertCondition(new RegExp(`(?:const|let|var)\\s+WEB_K_VERSION\\s*=\\s*['"]${escapedVersion}['"]`).test(generated), '生成文件缺少运行时版本常量');
   assertCondition(/version:\s*WEB_K_VERSION\b/.test(generated), '调试 API 未使用运行时版本常量');
-  assertCondition(generated.includes('browseDirection'), '生成文件缺少浏览方向设置');
-  assertCondition(generated.includes('mediaFilter'), '生成文件缺少媒体类型筛选设置');
-  assertCondition(generated.includes('createKeyboardShortcuts'), '生成文件缺少快捷键功能');
-  assertCondition(generated.includes('toggle-continuous'), '生成文件缺少连续浏览开关快捷键');
-  assertCondition(generated.includes('toggle-pause'), '生成文件缺少暂停快捷键');
+
+  for (const token of [
+    'browseDirection',
+    'mediaFilter',
+    'createKeyboardShortcuts',
+    'toggle-continuous',
+    'toggle-pause',
+    'custom-duration-input',
+    '自定义图片停留秒数',
+    'apply-duration',
+    '请输入 1～300 秒，最多一位小数',
+    'videoMuted',
+    'videoVolume',
+    'videoPlaybackRate',
+    'video-muted',
+    'video-volume',
+    'video-rate',
+    'enterpictureinpicture',
+    'leavepictureinpicture',
+    'fullscreenchange',
+    'NotAllowedError',
+    '媒体加载较慢',
+  ]) assertIncludes(generated, token, `生成文件缺少 V1 标记：${token}`);
+
   assertCondition(
     /function isValidPhotoDurationMs\(value\) \{\s*return Number\.isInteger\(value\) && value >= (?:1e3|1000) && value <= (?:3e5|300000) && value % 100 === 0;\s*\}/.test(generated),
-    '生成文件缺少 1～300 秒和一位小数精度校验',
+    '生成文件缺少 1～300 秒和一位小数校验',
   );
-  assertCondition(generated.includes('custom-duration-input'), '生成文件缺少自定义图片时间输入框');
-  assertCondition(generated.includes('自定义图片停留秒数'), '生成文件缺少自定义输入可访问性标识');
-  assertCondition(generated.includes('apply-duration'), '生成文件缺少自定义图片时间应用按钮');
-  assertCondition(generated.includes('请输入 1～300 秒，最多一位小数'), '生成文件缺少非法输入提示');
-
-  assertCondition(!/\bimport\s*\(/.test(generated), '生成文件禁止运行时动态 import');
+  assertExcludes(generated, 'disablePictureInPicture = false', '生成文件不得移除 Telegram PiP 限制');
+  assertCondition((generated.match(/tt\.mediaContinuity\.v1/g) || []).length === 1, '生成文件出现第二套 storage key');
+  assertCondition(!/\bimport\s*\(/.test(generated), '生成文件禁止动态 import');
   assertCondition(!/^\s*(?:import|export)\s/m.test(generated), '生成文件仍包含 ES Module 语句');
-  assertCondition(!/sourceMappingURL/i.test(generated), '生成文件禁止包含 sourcemap 引用');
-  assertCondition(/\(\(\)\s*=>\s*\{|\(function\s*\(\)\s*\{/.test(generated), '生成文件未检测到 IIFE 包装');
+  assertCondition(!/sourceMappingURL/i.test(generated), '生成文件禁止 sourcemap 引用');
+  assertCondition(/\(\(\)\s*=>\s*\{|\(function\s*\(\)\s*\{/.test(generated), '生成文件未检测到 IIFE');
 
   const unexpectedOutputs = topLevelEntries
     .filter((entry) => entry.isFile()
       && entry.name.startsWith('telegram-media-continuity-web-k')
       && entry.name !== OUTPUT_FILE_NAME)
     .map((entry) => entry.name);
-  assertCondition(unexpectedOutputs.length === 0, `检测到额外 Web K 构建产物：${unexpectedOutputs.join(', ')}`);
+  assertCondition(unexpectedOutputs.length === 0, `检测到额外 Web K 产物：${unexpectedOutputs.join(', ')}`);
 
   verifyModuleBoundaries(modules);
 
@@ -348,6 +468,7 @@ async function verifyGeneratedOutput() {
     `match=${WEB_K_MATCH}`,
     `modules=${modules.size}`,
     'legacy=removed',
+    'v1=loop-media,pause-reasons,video-preferences,control-panel',
     `output=${OUTPUT_FILE_NAME}`,
   ].join('\n'));
 }

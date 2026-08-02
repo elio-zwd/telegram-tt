@@ -9,6 +9,7 @@ export const PHOTO_DURATION_STEP_MS = 100;
 export const DURATIONS = Object.freeze([2000, 3000, 5000, 8000, 10000, 15000, 30000]);
 export const BROWSE_DIRECTIONS = Object.freeze(['forward', 'backward']);
 export const MEDIA_FILTERS = Object.freeze(['all', 'images', 'videos']);
+export const VIDEO_PLAYBACK_RATES = Object.freeze([0.5, 1, 1.25, 1.5, 2]);
 
 const DEFAULT_SETTINGS = Object.freeze({
   continuousEnabled: false,
@@ -16,6 +17,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   browseDirection: 'forward',
   mediaFilter: 'all',
   panelCollapsed: false,
+  videoMuted: false,
+  videoVolume: 1,
+  videoPlaybackRate: 1,
 });
 
 function isPlainObject(value) {
@@ -53,6 +57,19 @@ export function formatPhotoDurationMs(value) {
   return tenths ? `${wholeSeconds}.${tenths}` : String(wholeSeconds);
 }
 
+export function isValidVideoVolume(value) {
+  return Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+export function normalizeVideoVolume(value) {
+  if (!isValidVideoVolume(value)) return undefined;
+  return Math.round(value * 100) / 100;
+}
+
+export function isValidVideoPlaybackRate(value) {
+  return VIDEO_PLAYBACK_RATES.includes(value);
+}
+
 export function validateSettings(value) {
   const source = isPlainObject(value) ? value : {};
   return {
@@ -71,6 +88,15 @@ export function validateSettings(value) {
     panelCollapsed: typeof source.panelCollapsed === 'boolean'
       ? source.panelCollapsed
       : DEFAULT_SETTINGS.panelCollapsed,
+    videoMuted: typeof source.videoMuted === 'boolean'
+      ? source.videoMuted
+      : DEFAULT_SETTINGS.videoMuted,
+    videoVolume: isValidVideoVolume(source.videoVolume)
+      ? normalizeVideoVolume(source.videoVolume)
+      : DEFAULT_SETTINGS.videoVolume,
+    videoPlaybackRate: isValidVideoPlaybackRate(source.videoPlaybackRate)
+      ? source.videoPlaybackRate
+      : DEFAULT_SETTINGS.videoPlaybackRate,
   };
 }
 
