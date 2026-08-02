@@ -50,12 +50,12 @@ export class MediaStreamContinuationController {
     };
     this.nextOperationId += 1;
     this.operation = operation;
-    this.installUserTakeover(operation);
 
     if (!dispatchCloseMediaViewer(viewer)) {
       this.failBeforeClose(operation, '无法安全关闭当前媒体查看器，连续浏览已暂停');
       return false;
     }
+    this.installUserTakeover(operation);
 
     operation.closeTimer = window.setTimeout(() => {
       operation.closeTimer = 0;
@@ -202,6 +202,8 @@ export class MediaStreamContinuationController {
       operation.cancelWait = cancelWait;
 
       function check() {
+        window.clearTimeout(pollTimer);
+        pollTimer = 0;
         if (!operation || operation.state === 'cancelled') {
           finishWait(undefined);
           return;
@@ -249,6 +251,8 @@ export class MediaStreamContinuationController {
       operation.cancelWait = cancelWait;
 
       function check() {
+        window.clearTimeout(pollTimer);
+        pollTimer = 0;
         const viewer = findMediaViewer();
         if (viewer) {
           finishWait(viewer);
@@ -312,7 +316,7 @@ export class MediaStreamContinuationController {
 }
 
 function cloneFilterSequence(sequence) {
-  if (!sequence) return undefined;
+  if (!sequence || !Number.isFinite(sequence.startedAt)) return undefined;
   return {
     direction: sequence.direction > 0 ? 1 : -1,
     filter: sequence.filter,
