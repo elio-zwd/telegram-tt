@@ -7,6 +7,10 @@ import {
 import { findMediaViewer } from './media-viewer.js';
 
 const CHAT_SCROLL_SELECTOR = '.scrollable.scrollable-y.bubbles-scrollable';
+const MEDIA_OPEN_SELECTORS = Object.freeze([
+  '.media-photo-aspect',
+  '.attachment',
+]);
 
 export function findMessageNode(target) {
   let current = target instanceof Element ? target : undefined;
@@ -131,12 +135,18 @@ export function cloneMediaTarget(target) {
     peerKey: String(target.peerKey || ''),
     messageKey: String(target.messageKey || ''),
     albumIndex: Number.isInteger(target.albumIndex) ? target.albumIndex : 0,
+    mediaType: target.mediaType,
     source: target.source || 'source-message',
     confidence: target.confidence || 'high',
     confirmedAt: target.confirmedAt || 0,
     mediaFingerprint: target.mediaFingerprint || '',
     sourceMessageNode: target.sourceMessageNode,
   };
+}
+
+export function getMediaTargetKey(target) {
+  if (!target?.peerKey || !target.messageKey) return '';
+  return `${target.peerKey}:${target.messageKey}:${Number.isInteger(target.albumIndex) ? target.albumIndex : 0}`;
 }
 
 function isChatMediaNode(node) {
@@ -161,6 +171,20 @@ function getAlbumItemIndex(node) {
   return index >= 0 ? index : 0;
 }
 
+function getMessageMediaType(node) {
+  if (!(node instanceof Element)) return undefined;
+  if (node.classList.contains('video')
+    || node.classList.contains('is-gif')
+    || node.querySelector('video, .video, .is-gif')) {
+    return 'videos';
+  }
+  if (node.classList.contains('photo')
+    || node.querySelector('img, .media-photo-aspect')) {
+    return 'images';
+  }
+  return undefined;
+}
+
 function createTargetFromMessageNode(node) {
   const identity = getMessageIdentity(node);
   if (!identity?.messageId || !identity.peerId) return undefined;
@@ -169,6 +193,7 @@ function createTargetFromMessageNode(node) {
     peerKey: identity.peerId,
     messageKey: identity.messageId,
     albumIndex: getAlbumItemIndex(node),
+    mediaType: getMessageMediaType(node),
     source: 'source-message',
     confidence: 'high',
     confirmedAt: 0,
@@ -187,7 +212,7 @@ export function findActiveChatScrollContainer() {
   return candidates[0];
 }
 
-function collectOrderedChatMediaTargets(peerKey) {
+export function collectOrderedChatMediaTargets(peerKey) {
   const container = findActiveChatScrollContainer();
   if (!container || !peerKey) return [];
   const nodes = Array.from(container.querySelectorAll('[data-mid][data-peer-id]'))
@@ -205,7 +230,8 @@ function findTargetIndex(targets, target) {
   const nodeIndex = targets.findIndex((candidate) => candidate.sourceMessageNode === target.sourceMessageNode);
   if (nodeIndex >= 0) return nodeIndex;
   return targets.findIndex((candidate) => candidate.peerKey === target.peerKey
-    && candidate.messageKey === target.messageKey);
+    && candidate.messageKey === target.messageKey
+    && candidate.albumIndex === target.albumIndex);
 }
 
 export function findAdjacentMediaTarget(target, direction) {
@@ -233,6 +259,79 @@ function getActiveChatPeerKey(container) {
     }
   }
   return bestKey;
+}
+
+export function createChatMediaSnapshot(peerKey) {
+  const container = findActiveChatScrollContainer();
+  if (!container) return undefined;
+  const activePeerKey = getActiveChatPeerKey(container);
+  if (peerKey && activePeerKey && peerKey !== activePeerKey) return undefined;
+  const targets = collectOrderedChatMediaTargets(peerKey || activePeerKey);
+  return {
+    container,
+    activePeerKey,
+    scrollTop: container.scrollTop,
+    scrollHeight: container.scrollHeight,
+    clientHeight: container.clientHeight,
+    targets,
+    targetKeys: targets.map(getMediaTargetKey).filter(Boolean),
+  };
+}
+
+export function requestChatMediaLoad(peerKey, direction) {
+  const snapshot = createChatMediaSnapshot(peerKey);
+  if (!snapshot || !direction) return false;
+  const top = direction > 0 ? snapshot.container.scrollHeight : 0;
+  if (typeof snapshot.container.scrollTo === 'function') {
+    snapshot.container.scrollTo({ top, behavior: 'auto' });
+  } else {
+    snapshot.container.scrollTop = top;
+  }
+  snapshot.container.dispatchEvent(new Event('scroll', { bubbles: true }));
+  return true;
+}
+
+export function findContinuationMediaTarget(anchorTarget, direction, previousTargetKeys = [], attemptedTargetKeys = []) {
+  if (!anchorTarget || !direction) return undefined;
+  const targets = collectOrderedChatMediaTargets(anchorTarget.peerKey);
+  const attempted = new Set(attemptedTargetKeys);
+  const index = findTargetIndex(targets, anchorTarget);
+  if (index >= 0) {
+    const candidate = targets[index + (direction > 0 ? 1 : -1)];
+    if (candidate && !attempted.has(getMediaTargetKey(candidate))) return cloneMediaTarget(candidate);
+  }
+
+  const previous = new Set(previousTargetKeys);
+  const newTargets = targets.filter((candidate) => {
+    const key = getMediaTargetKey(candidate);
+    return key && !previous.has(key) && !attempted.has(key);
+  });
+  const fallback = direction > 0 ? newTargets[0] : newTargets[newTargets.length - 1];
+  return cloneMediaTarget(fallback);
+}
+
+function findExactMediaTargetNode(target) {
+  const targets = collectOrderedChatMediaTargets(target?.peerKey);
+  return targets.find((candidate) => candidate.messageKey === target?.messageKey
+    && candidate.albumIndex === target?.albumIndex)?.sourceMessageNode;
+}
+
+export function dispatchOpenMediaTarget(target) {
+  const node = findExactMediaTargetNode(target);
+  if (!(node instanceof HTMLElement) || !node.isConnected) return false;
+  node.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' });
+
+  let clickTarget;
+  for (const selector of MEDIA_OPEN_SELECTORS) {
+    const candidate = node.matches(selector) ? node : node.querySelector(selector);
+    if (candidate instanceof HTMLElement) {
+      clickTarget = candidate;
+      break;
+    }
+  }
+  if (!(clickTarget instanceof HTMLElement)) clickTarget = node;
+  clickTarget.click();
+  return true;
 }
 
 export function findExactMessageNode(target) {
